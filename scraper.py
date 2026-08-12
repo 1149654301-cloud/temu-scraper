@@ -59,6 +59,13 @@ DELAY_SEC = int(env_or("DELAY_SEC", "5"))
 MAX_RETRY = int(env_or("MAX_RETRY", "3"))
 TEMU_COOKIES_RAW = env_or("TEMU_COOKIES", "")
 
+# ---- 登录 cookie 自动续期（可选，强烈建议开启）----
+# Temu 登录 cookie 有效期短（24~72 小时），每次正常访问会自动续期。
+# 脚本会：1) 启动时优先读取 COOKIE_FILE（仓库内 cookies/latest.json），
+#         2) 运行结束后把浏览器会话中最新的 cookie 写回该文件，
+# 再由 GitHub Actions 提交到仓库。这样只需手动登录一次，之后登录态自动维护。
+COOKIE_FILE = env_or("COOKIE_FILE", "cookies/latest.json")
+
 # ---- 住宅代理（可选）----
 # 用静态住宅 IP 替代 GitHub Actions 的数据中心 IP，大幅降低 Temu 验证码概率。
 # 格式示例（IPRoyal ISP 代理）：
@@ -157,9 +164,62 @@ def parse_temu_cookies(raw):
     return out
 
 
+def load_latest_cookies():
+    """优先读仓库内最新 cookie（自动续期的核心），失败则回退 TEMU_COOKIES。"""
+    if os.path.exists(COOKIE_FILE):
+        try:
+            with open(COOKIE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and data:
+                log(f"  🔄 从仓库读取 {len(data)} 个最新 cookie")
+                return data
+            log("  ⚠️ 仓库 cookie 为空，回退 TEMU_COOKIES")
+        except Exception as _e:
+            log(f"  ⚠️ 仓库 cookie 读取失败，回退 TEMU_COOKIES: {_e}")
+    return parse_temu_cookies(TEMU_COOKIES_RAW)
+
+
+def save_latest_cookies(context):
+    """运行结束后把浏览器会话中最新 cookie 写回仓库文件，实现续期。"""
+    try:
+        state = context.storage_state()
+        cookies = state.get("cookies") or []
+        cookies = [c for c in cookies if "temu.com" in c.get("domain", "")]
+        if not cookies:
+            log("  ℹ️ 本次运行未获得 Temu cookie，跳过保存")
+            return
+        out = []
+        for c in cookies:
+            item = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c["path"],
+                "secure": bool(c.get("secure")),
+                "httpOnly": bool(c.get("httpOnly")),
+            }
+            exp = c.get("expires")
+            if exp and float(exp) > 0:
+                item["expirationDate"] = int(float(exp))
+            ss = (c.get("sameSite") or "").capitalize()
+            if ss == "None":
+                item["sameSite"] = "no_restriction"
+            elif ss == "Lax":
+                item["sameSite"] = "lax"
+            elif ss == "Strict":
+                item["sameSite"] = "strict"
+            out.append(item)
+        os.makedirs(os.path.dirname(COOKIE_FILE) or ".", exist_ok=True)
+        with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+        log(f"  💾 已保存 {len(out)} 个最新 cookie 到 {COOKIE_FILE}")
+    except Exception as _e:
+        log(f"  ⚠️ 保存 cookie 异常: {_e}")
+
+
 def inject_cookies(context, page):
     """先访问 Temu 首页建立站点上下文，再注入登录 cookie，最后刷新回首页。"""
-    cookies = parse_temu_cookies(TEMU_COOKIES_RAW)
+    cookies = load_latest_cookies()
     if not cookies:
         log("  ℹ️ 未提供 TEMU_COOKIES，以游客身份访问")
         return False
@@ -917,6 +977,7 @@ def main():
             if i < len(products) - 1:
                 time.sleep(DELAY_SEC)
 
+        save_latest_cookies(context)
         browser.close()
 
     log("\n" + "=" * 50)
