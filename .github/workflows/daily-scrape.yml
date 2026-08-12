@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m playwright install chromium
-          sudo python -m playwright install-deps chromium
+          python -m playwright install-deps chromium
 
       - name: 运行抓取（xvfb 虚拟显示器 + 有头浏览器）
         env:
