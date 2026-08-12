@@ -54,12 +54,15 @@ jobs:
             echo "✅ 新链接已提交"
           fi
 
-      - name: 运行抓取（Playwright + 住宅代理）
+      - name: 运行抓取（Playwright + 住宅代理 + xvfb）
         env:
           PROXY_URL: ${{ secrets.PROXY_URL }}
           DELAY_MIN: "2"
           DELAY_MAX: "5"
-        run: python scraper.py
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a --server-args="-screen 0 1920x1080x24" python scraper.py
 
       - name: 提交价格数据
         if: always()
