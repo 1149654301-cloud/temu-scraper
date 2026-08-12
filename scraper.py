@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Temu 价格监测 - cloudscraper 版（绕过 Cloudflare challenge）
+Temu 价格监测 - ScrapingBee API 版（绕开 Cloudflare Turnstile）
 
 原理：
-    cloudscraper 内置 JS 解释器，能自动解析并计算 Cloudflare IUAM challenge 的答案，
-    获取有效的 cookies 后再请求真实页面。配合住宅代理避免 IP 风控。
+    本地/服务器直连 Temu 会被 Cloudflare Turnstile 拦截（curl_cffi 模拟指纹、
+    Playwright 浏览器、cloudscraper 均失败）。改为调用 ScrapingBee 云服务，
+    由它用真实 Chrome + 反爬指纹池渲染页面，返回完整 HTML，我们只解析
+    __NEXT_DATA__ 提取价格。
+
+额度（免费 1000 credits，无需信用卡）：
+    render_js=true（JS 渲染）          = 5 credits / 次
+    render_js + premium_proxy（住宅） = 25 credits / 次（付费计划才可用）
+    只有 HTTP 200/404 才扣费，超时/失败不扣费。
 
 环境变量：
-    PROXY_URL    代理地址，如 http://user:pass@host:port
-    PRODUCTS_FILE 商品列表文件（默认 products.json）
-    DATA_FILE     价格快照输出文件（默认 data.json）
-    DELAY_MIN / DELAY_MAX  请求间隔随机范围（秒）
-    MAX_RETRY     每个商品最大重试次数
+    SCRAPINGBEE_API_KEY   必填，ScrapingBee API key
+    SCRAPINGBEE_PREMIUM   可选，"true" 时启用住宅代理（更稳，扣 25 credits）
+    PRODUCTS_FILE         商品列表文件（默认 products.json）
+    DATA_FILE             价格快照输出文件（默认 data.json）
+    DELAY_MIN / DELAY_MAX 请求间隔随机范围（秒）
+    MAX_RETRY             每个商品最大重试次数
 """
 
 import json
@@ -23,36 +31,26 @@ import time
 import random
 import datetime
 
-import cloudscraper
+import requests
 
 
 def env_or(key, default=""):
     return os.environ.get(key, default)
 
 
-PROXY_URL = env_or("PROXY_URL", "")
+API_KEY = env_or("SCRAPINGBEE_API_KEY", "").strip()
+PREMIUM = env_or("SCRAPINGBEE_PREMIUM", "false").lower() == "true"
+API_ENDPOINT = "https://app.scrapingbee.com/api/v1/"
 PRODUCTS_FILE = env_or("PRODUCTS_FILE", "products.json")
 DATA_FILE = env_or("DATA_FILE", "data.json")
 DELAY_MIN = float(env_or("DELAY_MIN", "2"))
 DELAY_MAX = float(env_or("DELAY_MAX", "5"))
-MAX_RETRY = int(env_or("MAX_RETRY", "3"))
+MAX_RETRY = int(env_or("MAX_RETRY", "2"))
 
 
 def log(msg):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
-
-
-# ==================== 代理 ====================
-def build_proxies():
-    if not PROXY_URL:
-        log("⚠️ 未配置 PROXY_URL，将直连访问（数据中心 IP 极易被风控，强烈建议配置住宅代理）")
-        return None
-    raw = PROXY_URL.strip()
-    if "://" not in raw:
-        raw = "http://" + raw
-    log(f"🌐 代理已启用")
-    return {"http": raw, "https": raw}
 
 
 # ==================== 商品读取 ====================
@@ -153,8 +151,38 @@ def deep_find_price(obj, depth=0, max_depth=7):
     return None
 
 
-# ==================== 抓取单个商品 ====================
-def fetch_product(goods_id, scraper):
+# ==================== ScrapingBee 抓取 ====================
+def scrapingbee_fetch(url):
+    """调用 ScrapingBee API，返回渲染后的 HTML；失败返回 None。"""
+    params = {
+        "api_key": API_KEY,
+        "url": url,
+        "render_js": "true",     # 真实 Chrome 渲染，5 credits
+        "wait": "5000",          # 等待 JS 执行完成
+        "country_code": "us",    # 美国站
+    }
+    if PREMIUM:
+        params["premium_proxy"] = "true"  # 住宅代理，25 credits，需付费计划
+    try:
+        resp = requests.get(API_ENDPOINT, params=params, timeout=90)
+    except Exception as e:
+        log(f"    ✗ ScrapingBee 请求异常: {e}")
+        return None
+
+    log(f"    ScrapingBee: HTTP {resp.status_code} | {len(resp.text)} bytes")
+    if resp.status_code == 200:
+        return resp.text
+    if resp.status_code == 402:
+        log("    ❌ 402: ScrapingBee 额度不足，请到 app.scrapingbee.com 查看余额")
+    elif resp.status_code == 403:
+        log("    ❌ 403: ScrapingBee 拒绝了请求（API key 无效或需要 premium 计划）")
+        log(f"      响应内容: {resp.text[:200]}")
+    else:
+        log(f"    ❌ ScrapingBee 错误 {resp.status_code}: {resp.text[:200]}")
+    return None
+
+
+def fetch_product(goods_id):
     urls = [
         f"https://www.temu.com/g-{goods_id}.html",
         f"https://www.temu.com/goods.html?goods_id={goods_id}",
@@ -162,43 +190,36 @@ def fetch_product(goods_id, scraper):
     last_err = None
     for attempt in range(1, MAX_RETRY + 1):
         for url in urls:
-            try:
-                resp = scraper.get(url, timeout=45)
-                log(f"  尝试{attempt}: HTTP {resp.status_code} | {len(resp.text)} bytes")
-                if resp.status_code != 200:
-                    last_err = f"HTTP {resp.status_code}"
-                    continue
-                html = resp.text
-                if "__NEXT_DATA__" not in html:
-                    last_err = "页面无 __NEXT_DATA__（可能被反爬拦截）"
-                    body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
-                    preview = (body_m.group(1) if body_m else html)[:500].replace("\n", " ").replace("  ", " ")
-                    log(f"    ⚠️ {last_err}")
-                    log(f"    📄 HTML 预览: {preview}")
-                    for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification"):
-                        if kw in html.lower():
-                            log(f"    🔒 检测到拦截关键词: {kw}")
-                            break
-                    continue
-                data = extract_next_data(html)
-                if not data:
-                    last_err = "__NEXT_DATA__ 解析失败"
-                    log(f"    ⚠️ {last_err}")
-                    continue
-                result = deep_find_price(data)
-                if result and result.get("price") is not None:
-                    return result
-                # 诊断信息
-                top_keys = list(data.keys())[:10]
-                pp = data.get("props", {}).get("pageProps", {})
-                pp_keys = list(pp.keys())[:15] if isinstance(pp, dict) else []
-                log(f"    ⚠️ 未找到价格字段 | 顶层={top_keys} | pageProps={pp_keys}")
-                last_err = "HTML 中未找到价格字段"
-            except Exception as e:
-                last_err = str(e)
-                log(f"    ✗ 异常: {e}")
+            html = scrapingbee_fetch(url)
+            if not html:
+                last_err = "ScrapingBee 返回空/错误"
+                continue
+            if "__NEXT_DATA__" not in html:
+                last_err = "页面无 __NEXT_DATA__（可能被反爬拦截）"
+                body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
+                preview = (body_m.group(1) if body_m else html)[:400].replace("\n", " ").replace("  ", " ")
+                log(f"    ⚠️ {last_err}")
+                log(f"    📄 HTML 预览: {preview}")
+                for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification", "turnstile"):
+                    if kw in html.lower():
+                        log(f"    🔒 检测到拦截关键词: {kw}")
+                        break
+                continue
+            data = extract_next_data(html)
+            if not data:
+                last_err = "__NEXT_DATA__ 解析失败"
+                log(f"    ⚠️ {last_err}")
+                continue
+            result = deep_find_price(data)
+            if result and result.get("price") is not None:
+                return result
+            top_keys = list(data.keys())[:10]
+            pp = data.get("props", {}).get("pageProps", {})
+            pp_keys = list(pp.keys())[:15] if isinstance(pp, dict) else []
+            log(f"    ⚠️ 未找到价格字段 | 顶层={top_keys} | pageProps={pp_keys}")
+            last_err = "HTML 中未找到价格字段"
         if attempt < MAX_RETRY:
-            wait = random.uniform(6, 12)
+            wait = random.uniform(3, 6)
             log(f"  重试前等待 {wait:.1f}s ...")
             time.sleep(wait)
     log(f"  ❌ 抓取失败: {last_err}")
@@ -252,26 +273,14 @@ def update_data(results):
 
 # ==================== 主流程 ====================
 def main():
-    log("🚀 Temu 价格监测启动（cloudscraper 版，自动绕过 Cloudflare）")
-    proxies = build_proxies()
+    log("🚀 Temu 价格监测启动（ScrapingBee 云渲染版）")
 
-    # cloudscraper 自动模拟 Chrome 指纹并处理 challenge
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        }
-    )
-    if proxies:
-        scraper.proxies = proxies
-
-    # 可选：先访问首页建立 cookies
-    try:
-        home = scraper.get("https://www.temu.com/", timeout=30)
-        log(f"🌐 首页预加载: HTTP {home.status_code} | {len(home.text)} bytes")
-    except Exception as e:
-        log(f"⚠️ 首页预加载失败（非致命）: {e}")
+    if not API_KEY:
+        log("❌ 未配置 SCRAPINGBEE_API_KEY。请到 app.scrapingbee.com 注册获取后，")
+        log("   在 GitHub 仓库 Settings → Secrets → 新建 SCRAPINGBEE_API_KEY")
+        sys.exit(1)
+    mode = "JS 渲染（5 credits/次）" if not PREMIUM else "JS 渲染 + 住宅代理（25 credits/次）"
+    log(f"🔑 API key 已配置 | 模式: {mode}")
 
     products = load_products()
 
@@ -284,7 +293,7 @@ def main():
             fail += 1
             continue
         log(f"[{i}/{len(products)}] 抓取 g-{gid}")
-        r = fetch_product(gid, scraper)
+        r = fetch_product(gid)
         if r:
             results.append(r)
             ok += 1
