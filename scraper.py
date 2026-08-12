@@ -253,23 +253,38 @@ def inject_cookies(context, page):
     return True
 
 
-# ============ jsonblob 读写 ============
+# ============ jsonblob 读写（带本地文件回退） ============
+PRODUCTS_FILE = "products.json"
+
 def get_blob():
+    """优先读 jsonblob，失败回退到本地 products.json"""
+    # 1) 尝试 jsonblob
     for i in range(5):
         try:
             r = requests.get(BLOB_URL, timeout=30)
             if r.status_code == 200:
                 return r.json(), r.headers.get("ETag")
             if r.status_code == 404:
-                return {"p": []}, None
+                log("  ⚠️ jsonblob 返回 404（已丢失），尝试回退本地文件")
+                break
             log(f"  ⚠️ GET 数据中心 HTTP {r.status_code}，重试 {i + 1}/5")
         except Exception as e:
             log(f"  ⚠️ GET 数据中心异常: {e}，重试 {i + 1}/5")
         time.sleep(3 * (i + 1))
+    # 2) 回退本地文件
+    if os.path.exists(PRODUCTS_FILE):
+        try:
+            with open(PRODUCTS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            log(f"  📁 从本地 {PRODUCTS_FILE} 读取商品数据（{len(data.get('p') or [])} 条）")
+            return data, None
+        except Exception as e:
+            log(f"  ⚠️ 本地文件读取失败: {e}")
     return None, None
 
 
 def put_blob(data, etag):
+    """优先写 jsonblob，失败回退到本地 products.json。本地写入成功也视为成功。"""
     headers = {"Content-Type": "application/json"}
     if etag:
         headers["If-Match"] = etag
@@ -282,6 +297,14 @@ def put_blob(data, etag):
         except Exception as e:
             log(f"  ⚠️ PUT 数据中心异常: {e}，重试 {i + 1}/5")
         time.sleep(3 * (i + 1))
+    # 回退本地文件
+    try:
+        with open(PRODUCTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        log(f"  📁 已写入本地 {PRODUCTS_FILE}（jsonblob 不可用）")
+        return True
+    except Exception as e:
+        log(f"  ❌ 写入本地文件也失败: {e}")
     return False
 
 
@@ -935,7 +958,7 @@ def main():
 
     data, etag = get_blob()
     if data is None:
-        log("❌ 无法读取数据中心")
+        log("❌ 无法读取数据中心，也没有本地 products.json")
         sys.exit(1)
 
     products = data.get("p") or []
