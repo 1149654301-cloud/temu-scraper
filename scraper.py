@@ -243,8 +243,36 @@ def inject_cookies(context, page):
     except Exception:
         pass
     time.sleep(3)
-    context.add_cookies(cookies)
-    log(f"  🔑 已注入 {len(cookies)} 个 Temu 登录 cookie")
+    # Playwright add_cookies 要求 sameSite 只能是 "Strict"|"Lax"|"None"
+    normalized = []
+    for c in cookies:
+        item = dict(c)
+        ss = item.get("sameSite")
+        if isinstance(ss, str):
+            ss_map = {
+                "strict": "Strict",
+                "lax": "Lax",
+                "none": "None",
+                "no_restriction": "None",
+            }
+            mapped = ss_map.get(ss.lower())
+            if mapped:
+                item["sameSite"] = mapped
+            else:
+                item.pop("sameSite", None)
+        # Playwright 用 expires（浮点秒），不是 expirationDate
+        if "expirationDate" in item and "expires" not in item:
+            try:
+                item["expires"] = float(item.pop("expirationDate"))
+            except Exception:
+                pass
+        normalized.append(item)
+    try:
+        context.add_cookies(normalized)
+    except Exception as e:
+        log(f"  ⚠️ 注入 cookie 失败: {e}")
+        return False
+    log(f"  🔑 已注入 {len(normalized)} 个 Temu 登录 cookie")
     try:
         page.goto("https://www.temu.com/", wait_until="domcontentloaded", timeout=30000)
     except Exception:
