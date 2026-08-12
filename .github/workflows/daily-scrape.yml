@@ -1,12 +1,11 @@
-name: Temu 每日自动抓取
+name: Temu 价格自动监测
 
 on:
   schedule:
-    # 每天 01:00 UTC = 北京时间 09:00（可自行修改）
-    - cron: "0 1 * * *"
+    # 每 45 分钟跑一次（GitHub 免费额度限制下尽量高频）
+    # 如需更快可在 GitHub 页面上手动 "Run workflow"
+    - cron: "0,45 * * * *"
   workflow_dispatch:
-    # 允许在 GitHub 页面上手动点击"Run workflow"立即跑一次
-    # 也可以在输入框里粘贴新链接，脚本会自动追加到 products.json 后抓取
     inputs:
       new_links:
         description: '新增商品链接（可多个，用逗号/换行分隔；留空则只抓取现有链接）'
@@ -16,9 +15,9 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 15
     permissions:
-      contents: write  # 允许自动提交续期后的 cookie 文件
+      contents: write
     concurrency:
       group: temu-scrape
       cancel-in-progress: false
@@ -36,8 +35,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m playwright install chromium
-          python -m playwright install-deps chromium
 
       - name: 追加新链接（若输入框填了链接）
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.new_links != '' }}
@@ -52,35 +49,23 @@ jobs:
             echo "✅ 新链接已提交"
           fi
 
-      - name: 运行抓取（xvfb 虚拟显示器 + 有头浏览器）
+      - name: 运行抓取（curl_cffi + 住宅代理，无需浏览器）
         env:
-          JSONBLOB_URL: ${{ secrets.JSONBLOB_URL }}
-          SCRAPE_OPERATOR: ${{ secrets.SCRAPE_OPERATOR }}
-          TEMU_COOKIES: ${{ secrets.TEMU_COOKIES }}
-          VISION_API_KEY: ${{ secrets.VISION_API_KEY }}
-          VISION_API_URL: ${{ secrets.VISION_API_URL }}
-          VISION_MODEL: ${{ secrets.VISION_MODEL }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x2000x24" python scraper.py
+          DELAY_MIN: "2"
+          DELAY_MAX: "5"
+        run: python scraper.py
 
-      - name: 提交最新 cookie（自动续期）
+      - name: 提交价格数据
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cookies/latest.json products.json 2>/dev/null || true
+          git add data.json products.json
           if ! git diff --cached --quiet; then
-            git commit -m "chore: 自动续期 Temu cookie $(date -u +%Y-%m-%d_%H:%M)"
+            git commit -m "chore: 更新价格数据 $(date -u +%Y-%m-%d_%H:%M)"
             git push
+            echo "✅ 价格数据已提交"
           else
-            echo "无变化，跳过提交"
+            echo "数据无变化，跳过提交"
           fi
-
-      - name: 上传运行日志与诊断截图
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scrape-logs
-          path: |
-            artifacts/
-          retention-days: 7
