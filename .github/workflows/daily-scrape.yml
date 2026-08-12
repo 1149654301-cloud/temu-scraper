@@ -2,8 +2,10 @@ name: Temu 每日自动抓取
 
 on:
   schedule:
+    # 每天 01:00 UTC = 北京时间 09:00（可自行修改）
     - cron: "0 1 * * *"
   workflow_dispatch:
+    # 允许在 GitHub 页面上手动点击"Run workflow"立即跑一次
 
 jobs:
   scrape:
@@ -34,6 +36,9 @@ jobs:
           JSONBLOB_URL: ${{ secrets.JSONBLOB_URL }}
           SCRAPE_OPERATOR: ${{ secrets.SCRAPE_OPERATOR }}
           TEMU_COOKIES: ${{ secrets.TEMU_COOKIES }}
+          VISION_API_KEY: ${{ secrets.VISION_API_KEY }}
+          VISION_API_URL: ${{ secrets.VISION_API_URL }}
+          VISION_MODEL: ${{ secrets.VISION_MODEL }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x2000x24" python scraper.py
 
       - name: 上传运行日志与诊断截图
