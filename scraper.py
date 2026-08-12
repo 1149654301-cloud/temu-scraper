@@ -1,34 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Temu 价格监测 - ScrapingBee API 版（绕开 Cloudflare Turnstile）
+Temu 价格监测 - Apify 云抓取版（最终稳定方案）
 
 原理：
-    本地/服务器直连 Temu 会被 Cloudflare Turnstile 拦截（curl_cffi 模拟指纹、
-    Playwright 浏览器、cloudscraper 均失败）。改为调用 ScrapingBee 云服务，
-    由它用真实 Chrome + 反爬指纹池渲染页面，返回完整 HTML，我们只解析
-    __NEXT_DATA__ 提取价格。
+    Temu 商品页是 SPA 纯客户端渲染，HTML 中不包含价格数据（已实测确认）。
+    价格只能通过内部 API 获取，而 API 需要 anti_content 签名（逆向脆弱且易失效）。
+    本方案改为调用 Apify 现成的 Temu Products Scraper actor：
+      它用 Playwright stealth + 住宅代理 + 逆向签名，输入商品链接即可返回价格，
+      反爬问题全部由它处理，不依赖本仓库任何破解代码。
 
-额度（免费 1000 credits，无需信用卡）：
-    render_js=true（JS 渲染）          = 5 credits / 次
-    render_js + premium_proxy（住宅） = 25 credits / 次（付费计划才可用）
-    只有 HTTP 200/404 才扣费，超时/失败不扣费。
+费用（Apify 免费注册送 $5 credit，够测试）：
+    goat255/temu-products-scraper: $7 / 1000 条商品
+    3 个商品每轮 ≈ $0.02，每 3 小时一轮 ≈ $0.17/天，约 $5/月
 
 环境变量：
-    SCRAPINGBEE_API_KEY   必填，ScrapingBee API key
-    SCRAPINGBEE_PREMIUM   可选，"true" 时启用住宅代理（更稳，扣 25 credits）
-    PRODUCTS_FILE         商品列表文件（默认 products.json）
-    DATA_FILE             价格快照输出文件（默认 data.json）
-    DELAY_MIN / DELAY_MAX 请求间隔随机范围（秒）
-    MAX_RETRY             每个商品最大重试次数
+    APIFY_API_TOKEN   必填，Apify API token（console.apify.com → Settings → Integrations）
+    PRODUCTS_FILE     商品列表文件（默认 products.json）
+    DATA_FILE         价格快照输出文件（默认 data.json）
 """
 
 import json
 import os
-import re
 import sys
-import time
-import random
 import datetime
 
 import requests
@@ -38,14 +32,11 @@ def env_or(key, default=""):
     return os.environ.get(key, default)
 
 
-API_KEY = env_or("SCRAPINGBEE_API_KEY", "").strip()
-PREMIUM = env_or("SCRAPINGBEE_PREMIUM", "false").lower() == "true"
-API_ENDPOINT = "https://app.scrapingbee.com/api/v1/"
+API_TOKEN = env_or("APIFY_API_TOKEN", "").strip()
+ACTOR_ID = "goat255~temu-products-scraper"
+API_URL = f"https://api.apify.com/v2/actors/{ACTOR_ID}/run-sync-get-dataset-items"
 PRODUCTS_FILE = env_or("PRODUCTS_FILE", "products.json")
 DATA_FILE = env_or("DATA_FILE", "data.json")
-DELAY_MIN = float(env_or("DELAY_MIN", "2"))
-DELAY_MAX = float(env_or("DELAY_MAX", "5"))
-MAX_RETRY = int(env_or("MAX_RETRY", "2"))
 
 
 def log(msg):
@@ -66,6 +57,8 @@ def load_products():
 
 
 def extract_goods_id(product):
+    """从商品记录的 id/lu 字段提取纯数字商品 ID"""
+    import re
     pid = str(product.get("id", ""))
     lu = str(product.get("lu", ""))
     m = re.search(r"(\d{10,})", pid)
@@ -83,147 +76,79 @@ def extract_goods_id(product):
     return None
 
 
-# ==================== __NEXT_DATA__ 提取 ====================
-def extract_next_data(html):
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(1))
-    except Exception:
-        return None
-
-
-def deep_find_price(obj, depth=0, max_depth=7):
-    if depth > max_depth:
-        return None
-    if isinstance(obj, dict):
-        gid = obj.get("goods_id")
-        if gid:
-            price = None
-            currency = None
-            skus = obj.get("sku_list") or obj.get("sku") or []
-            if isinstance(skus, list) and skus and not isinstance(skus[0], (str, int, float)):
-                skus = skus[0].get("spec_list") if isinstance(skus[0], dict) and skus[0].get("spec_list") else skus
-
-            for price_field in ("min_normal_price", "sale_price", "normal_price", "price", "min_price", "sku_price"):
-                pf = obj.get(price_field)
-                if isinstance(pf, dict) and pf.get("amount") is not None:
-                    price = pf["amount"]
-                    currency = pf.get("currency") or pf.get("symbol") or currency
-                    break
-                if isinstance(pf, (int, float)) and price is None:
-                    price = pf
-
-            sku_prices = []
-            if isinstance(skus, list):
-                for s in skus:
-                    if isinstance(s, dict):
-                        p = s.get("price")
-                        if isinstance(p, dict):
-                            if p.get("amount") is not None:
-                                sku_prices.append(float(p["amount"]))
-                        elif isinstance(p, (int, float)):
-                            sku_prices.append(float(p))
-
-            if price is not None or sku_prices:
-                final_price = price
-                if final_price is None and sku_prices:
-                    final_price = min(sku_prices)
-                return {
-                    "goods_id": str(gid),
-                    "goods_name": obj.get("goods_name") or obj.get("name") or "",
-                    "price": float(final_price) if final_price is not None else None,
-                    "currency": currency or "USD",
-                    "sku_count": len(sku_prices),
-                    "sku_prices": sku_prices,
-                }
-
-        for v in obj.values():
-            r = deep_find_price(v, depth + 1, max_depth)
-            if r:
-                return r
-    elif isinstance(obj, list):
-        for v in obj:
-            r = deep_find_price(v, depth + 1, max_depth)
-            if r:
-                return r
-    return None
-
-
-# ==================== ScrapingBee 抓取 ====================
-def scrapingbee_fetch(url):
-    """调用 ScrapingBee API，返回渲染后的 HTML；失败返回 None。"""
-    params = {
-        "api_key": API_KEY,
-        "url": url,
-        "render_js": "true",     # 真实 Chrome 渲染，5 credits
-        "wait": "5000",          # 等待 JS 执行完成
-        "country_code": "us",    # 美国站
+# ==================== Apify 抓取 ====================
+def fetch_prices(goods_ids):
+    """调用 Apify actor，返回 {goods_id: price_record} 映射"""
+    payload = {
+        "productUrls": goods_ids,
+        "concurrency": 3,
+        "proxyConfig": {
+            "useApifyProxy": True,
+            "apifyProxyGroups": ["RESIDENTIAL"],
+        },
     }
-    if PREMIUM:
-        params["premium_proxy"] = "true"  # 住宅代理，25 credits，需付费计划
+    log(f"🚀 调用 Apify actor: {ACTOR_ID}")
+    log(f"   商品: {goods_ids}")
     try:
-        resp = requests.get(API_ENDPOINT, params=params, timeout=90)
+        resp = requests.post(
+            API_URL,
+            params={"token": API_TOKEN, "timeout": 180},
+            json=payload,
+            timeout=200,
+        )
     except Exception as e:
-        log(f"    ✗ ScrapingBee 请求异常: {e}")
-        return None
+        log(f"❌ Apify 请求异常: {e}")
+        return {}
 
-    log(f"    ScrapingBee: HTTP {resp.status_code} | {len(resp.text)} bytes")
     if resp.status_code == 200:
-        return resp.text
-    if resp.status_code == 402:
-        log("    ❌ 402: ScrapingBee 额度不足，请到 app.scrapingbee.com 查看余额")
-    elif resp.status_code == 403:
-        log("    ❌ 403: ScrapingBee 拒绝了请求（API key 无效或需要 premium 计划）")
-        log(f"      响应内容: {resp.text[:200]}")
+        try:
+            items = resp.json()
+            log(f"✅ Apify 返回 {len(items)} 条数据")
+            return items
+        except Exception as e:
+            log(f"❌ 响应解析失败: {e} | {resp.text[:300]}")
+            return {}
+    elif resp.status_code == 401 or resp.status_code == 403:
+        log("❌ Apify 认证失败：API token 无效。请检查 APIFY_API_TOKEN secret")
+        log(f"   {resp.text[:300]}")
+    elif resp.status_code == 429:
+        log("❌ Apify 额度/频率超限：免费额度可能用完，或运行过于频繁")
     else:
-        log(f"    ❌ ScrapingBee 错误 {resp.status_code}: {resp.text[:200]}")
-    return None
+        log(f"❌ Apify 错误 {resp.status_code}: {resp.text[:300]}")
+    return {}
 
 
-def fetch_product(goods_id):
-    urls = [
-        f"https://www.temu.com/g-{goods_id}.html",
-        f"https://www.temu.com/goods.html?goods_id={goods_id}",
-    ]
-    last_err = None
-    for attempt in range(1, MAX_RETRY + 1):
-        for url in urls:
-            html = scrapingbee_fetch(url)
-            if not html:
-                last_err = "ScrapingBee 返回空/错误"
-                continue
-            if "__NEXT_DATA__" not in html:
-                last_err = "页面无 __NEXT_DATA__（可能被反爬拦截）"
-                body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
-                preview = (body_m.group(1) if body_m else html)[:400].replace("\n", " ").replace("  ", " ")
-                log(f"    ⚠️ {last_err}")
-                log(f"    📄 HTML 预览: {preview}")
-                for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification", "turnstile"):
-                    if kw in html.lower():
-                        log(f"    🔒 检测到拦截关键词: {kw}")
-                        break
-                continue
-            data = extract_next_data(html)
-            if not data:
-                last_err = "__NEXT_DATA__ 解析失败"
-                log(f"    ⚠️ {last_err}")
-                continue
-            result = deep_find_price(data)
-            if result and result.get("price") is not None:
-                return result
-            top_keys = list(data.keys())[:10]
-            pp = data.get("props", {}).get("pageProps", {})
-            pp_keys = list(pp.keys())[:15] if isinstance(pp, dict) else []
-            log(f"    ⚠️ 未找到价格字段 | 顶层={top_keys} | pageProps={pp_keys}")
-            last_err = "HTML 中未找到价格字段"
-        if attempt < MAX_RETRY:
-            wait = random.uniform(3, 6)
-            log(f"  重试前等待 {wait:.1f}s ...")
-            time.sleep(wait)
-    log(f"  ❌ 抓取失败: {last_err}")
-    return None
+def parse_apify_result(items, goods_ids):
+    """把 Apify 返回的数据转成统一结果列表"""
+    results = []
+    # 按商品 ID 索引
+    by_id = {}
+    for it in items:
+        gid = str(it.get("id") or "")
+        if gid:
+            by_id[gid] = it
+
+    for gid in goods_ids:
+        it = by_id.get(gid)
+        if not it:
+            log(f"  ⚠️ g-{gid}: Apify 未返回数据（可能链接失效或抓取失败）")
+            continue
+        price = it.get("price") or it.get("priceMin")
+        if price is None:
+            log(f"  ⚠️ g-{gid}: 返回了数据但没有价格: {json.dumps(it, ensure_ascii=False)[:200]}")
+            continue
+        variants = it.get("variants") or []
+        sku_prices = [float(v["price"]) for v in variants if v.get("price") is not None]
+        results.append({
+            "goods_id": gid,
+            "goods_name": it.get("title") or "",
+            "price": float(price),
+            "currency": it.get("currency") or "USD",
+            "sku_count": len(sku_prices),
+            "sku_prices": sku_prices,
+        })
+        log(f"  ✅ {it.get('title', '')[:40]} → ${price}")
+    return results
 
 
 # ==================== 数据更新 ====================
@@ -273,43 +198,39 @@ def update_data(results):
 
 # ==================== 主流程 ====================
 def main():
-    log("🚀 Temu 价格监测启动（ScrapingBee 云渲染版）")
+    log("🚀 Temu 价格监测启动（Apify 云抓取版）")
 
-    if not API_KEY:
-        log("❌ 未配置 SCRAPINGBEE_API_KEY。请到 app.scrapingbee.com 注册获取后，")
-        log("   在 GitHub 仓库 Settings → Secrets → 新建 SCRAPINGBEE_API_KEY")
+    if not API_TOKEN:
+        log("❌ 未配置 APIFY_API_TOKEN。请到 console.apify.com 注册获取后，")
+        log("   在 GitHub 仓库 Settings → Secrets → 新建 APIFY_API_TOKEN")
         sys.exit(1)
-    mode = "JS 渲染（5 credits/次）" if not PREMIUM else "JS 渲染 + 住宅代理（25 credits/次）"
-    log(f"🔑 API key 已配置 | 模式: {mode}")
 
     products = load_products()
 
-    results = []
-    ok = fail = 0
-    for i, product in enumerate(products, 1):
+    # 提取商品 ID
+    goods_ids = []
+    for product in products:
         gid = extract_goods_id(product)
-        if not gid:
-            log(f"[{i}/{len(products)}] ⚠️ 无法解析商品 ID: {product.get('id')}")
-            fail += 1
-            continue
-        log(f"[{i}/{len(products)}] 抓取 g-{gid}")
-        r = fetch_product(gid)
-        if r:
-            results.append(r)
-            ok += 1
-            sku_note = f"，{r['sku_count']} SKU" if r.get("sku_count") else ""
-            log(f"  ✅ {r['goods_name'][:40]} → ${r['price']}{sku_note}")
+        if gid:
+            goods_ids.append(gid)
         else:
-            fail += 1
-        if i < len(products):
-            time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+            log(f"⚠️ 无法解析商品 ID: {product.get('id')}")
+    if not goods_ids:
+        log("❌ 没有可抓取的商品")
+        sys.exit(1)
+    log(f"共 {len(goods_ids)} 个商品")
 
-    log(f"🏁 完成：成功 {ok} / 失败 {fail}")
+    items = fetch_prices(goods_ids)
+    if not items:
+        sys.exit(1)
+
+    results = parse_apify_result(items, goods_ids)
+    log(f"🏁 完成：成功 {len(results)} / 共 {len(goods_ids)}")
 
     if results:
         update_data(results)
         print("RESULT_JSON=" + json.dumps(results, ensure_ascii=False))
-        sys.exit(0 if fail == 0 else 2)
+        sys.exit(0 if len(results) == len(goods_ids) else 2)
     else:
         sys.exit(1)
 
