@@ -44,11 +44,21 @@ MAX_RETRY = int(env_or("MAX_RETRY", "3"))
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.temu.com/",
+    "DNT": "1",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Sec-Ch-Ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
@@ -77,13 +87,28 @@ def build_proxies():
 def verify_proxy(session):
     """请求 ipify 确认代理是否真正生效"""
     try:
-        r = session.get("https://api.ipify.org?format=json", timeout=15, impersonate="chrome120")
+        r = session.get("https://api.ipify.org?format=json", timeout=15, impersonate="chrome131")
         ip = r.json().get("ip", "unknown")
         log(f"🌐 当前出口 IP: {ip}")
         return ip
     except Exception as e:
         log(f"⚠️ IP 检测失败: {e}")
         return None
+
+
+def preflight(session):
+    """先访问 Temu 首页获取 cookies，让后续商品请求更自然"""
+    try:
+        r = session.get(
+            "https://www.temu.com/",
+            headers=HEADERS,
+            impersonate="chrome131",
+            timeout=30,
+            allow_redirects=True,
+        )
+        log(f"  预请求首页: HTTP {r.status_code} | {len(r.text)} bytes")
+    except Exception as e:
+        log(f"  预请求首页失败（非致命）: {e}")
 
 
 # ==================== 商品读取 ====================
@@ -206,7 +231,7 @@ def fetch_product(goods_id, session):
                 resp = session.get(
                     url,
                     headers=HEADERS,
-                    impersonate="chrome120",
+                    impersonate="chrome131",
                     timeout=45,
                     allow_redirects=True,
                 )
@@ -217,9 +242,17 @@ def fetch_product(goods_id, session):
                 html = resp.text
                 if "__NEXT_DATA__" not in html:
                     last_err = "页面无 __NEXT_DATA__（可能被反爬拦截或需人工验证）"
-                    preview = html[:300].replace("\n", " ")
+                    # 提取 body 或整体前 500 字符帮助诊断
+                    body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
+                    preview = (body_m.group(1) if body_m else html)[:500].replace("\n", " ").replace("  ", " ")
                     log(f"    ⚠️ {last_err}")
                     log(f"    📄 HTML 预览: {preview}")
+                    # 检测常见拦截关键词
+                    lower = html.lower()
+                    for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification"):
+                        if kw in lower:
+                            log(f"    🔒 检测到拦截关键词: {kw}")
+                            break
                     continue
                 data = extract_next_data(html)
                 if not data:
@@ -306,6 +339,10 @@ def main():
 
     # 验证代理是否真正生效
     verify_proxy(session)
+
+    # 先访问首页建立会话 cookies
+    log("🌐 预请求 Temu 首页建立 cookies...")
+    preflight(session)
 
     products = load_products()
 
