@@ -469,10 +469,14 @@ def vision_request(image_b64):
             ],
         }],
         "max_tokens": 1200,
-        "temperature": 0,
     }
-    r = requests.post(VISION_API_URL, headers=headers, json=payload, timeout=90)
-    r.raise_for_status()
+    try:
+        r = requests.post(VISION_API_URL, headers=headers, json=payload, timeout=90)
+    except Exception as e:
+        raise RuntimeError(f"视觉模型请求异常: {type(e).__name__}: {e}")
+    if r.status_code != 200:
+        # 打印完整响应体方便诊断
+        raise RuntimeError(f"视觉模型返回 {r.status_code}: {r.text[:500]}")
     data = r.json()
     return data["choices"][0]["message"]["content"]
 
@@ -891,15 +895,4 @@ def main():
 
     if ok == 0:
         log("❌ 全部失败，不写回数据，避免破坏现有数据")
-        sys.exit(1)
-
-    log("写回数据中心...")
-    if put_blob(data, etag):
-        log("✅ 数据已更新")
-    else:
-        log("❌ 写回失败")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+        sys
