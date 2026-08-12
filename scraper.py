@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Temu 价格监测 - curl_cffi 版（无需浏览器 / 登录 / cookie / 验证码）
+Temu 价格监测 - Playwright 版（带住宅代理 + stealth）
 
 原理：
-    Temu 是 Next.js 网站，商品页 HTML 内嵌 <script id="__NEXT_DATA__"> JSON，
-    其中包含完整价格 / SKU / 名称等数据，服务端直接渲染，无需执行 JS。
-    用 curl_cffi 模拟 Chrome 的 TLS 指纹 + 住宅代理访问商品页，
-    即可直接提取价格，全程不需要浏览器。
-
-依赖：curl_cffi（模拟 TLS 指纹）+ 住宅代理（避免数据中心 IP 被风控）
+    用 Playwright 启动 Chromium，配置住宅代理和 stealth 参数，
+    访问商品页后提取 __NEXT_DATA__ 中的价格数据。
+    Playwright 能自动执行 Cloudflare 的 JS challenge，
+    住宅代理避免触发验证码。
 
 环境变量：
-    PROXY_URL    代理地址，如 http://user:pass@host:port（强烈建议配置住宅代理）
+    PROXY_URL    代理地址，如 http://user:pass@host:port
     PRODUCTS_FILE 商品列表文件（默认 products.json）
     DATA_FILE     价格快照输出文件（默认 data.json）
     DELAY_MIN / DELAY_MAX  请求间隔随机范围（秒）
@@ -26,10 +24,10 @@ import sys
 import time
 import random
 import datetime
-from curl_cffi import requests as cffi_requests
+
+from playwright.sync_api import sync_playwright
 
 
-# ==================== 配置 ====================
 def env_or(key, default=""):
     return os.environ.get(key, default)
 
@@ -41,74 +39,34 @@ DELAY_MIN = float(env_or("DELAY_MIN", "2"))
 DELAY_MAX = float(env_or("DELAY_MAX", "5"))
 MAX_RETRY = int(env_or("MAX_RETRY", "3"))
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://www.temu.com/",
-    "DNT": "1",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Sec-Ch-Ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-}
-
 
 def log(msg):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
 
 
-# ==================== 代理 ====================
-def build_proxies():
+# ==================== 代理解析 ====================
+def parse_proxy():
+    """解析 PROXY_URL 为 Playwright proxy 字典"""
     if not PROXY_URL:
-        log("⚠️ 未配置 PROXY_URL，将直连访问（数据中心 IP 极易被风控，强烈建议配置住宅代理）")
         return None
     raw = PROXY_URL.strip()
     if "://" not in raw:
         raw = "http://" + raw
-    log(f"代理已启用")
-    # 同时设置 libcurl 环境变量（小写），为 curl_cffi 提供兜底代理
-    os.environ["http_proxy"] = raw
-    os.environ["https_proxy"] = raw
-    return {"http": raw, "https": raw}
-
-
-def verify_proxy(session):
-    """请求 ipify 确认代理是否真正生效"""
-    try:
-        r = session.get("https://api.ipify.org?format=json", timeout=15, impersonate="chrome131")
-        ip = r.json().get("ip", "unknown")
-        log(f"🌐 当前出口 IP: {ip}")
-        return ip
-    except Exception as e:
-        log(f"⚠️ IP 检测失败: {e}")
-        return None
-
-
-def preflight(session):
-    """先访问 Temu 首页获取 cookies，让后续商品请求更自然"""
-    try:
-        r = session.get(
-            "https://www.temu.com/",
-            headers=HEADERS,
-            impersonate="chrome131",
-            timeout=30,
-            allow_redirects=True,
-        )
-        log(f"  预请求首页: HTTP {r.status_code} | {len(r.text)} bytes")
-    except Exception as e:
-        log(f"  预请求首页失败（非致命）: {e}")
+    # 格式: http://user:pass@host:port
+    m = re.match(r"^(https?)://([^:]+):([^@]+)@(.+):(\d+)$", raw)
+    if m:
+        return {
+            "server": f"{m.group(1)}://{m.group(4)}:{m.group(5)}",
+            "username": m.group(2),
+            "password": m.group(3),
+        }
+    # 无认证格式: http://host:port
+    m2 = re.match(r"^(https?)://(.+):(\d+)$", raw)
+    if m2:
+        return {"server": raw}
+    log(f"⚠️ 代理格式无法解析，将直连: {raw}")
+    return None
 
 
 # ==================== 商品读取 ====================
@@ -124,7 +82,6 @@ def load_products():
 
 
 def extract_goods_id(product):
-    """从商品 id 或 lu 链接中提取纯数字 goods_id"""
     pid = str(product.get("id", ""))
     lu = str(product.get("lu", ""))
     m = re.search(r"(\d{10,})", pid)
@@ -154,11 +111,6 @@ def extract_next_data(html):
 
 
 def deep_find_price(obj, depth=0, max_depth=7):
-    """递归搜索 __NEXT_DATA__，找到含 goods_id 与价格字段的商品对象。
-
-    返回 dict：{goods_id, goods_name, price, currency, sku_count, sku_prices}
-    找不到返回 None。
-    """
     if depth > max_depth:
         return None
     if isinstance(obj, dict):
@@ -170,7 +122,6 @@ def deep_find_price(obj, depth=0, max_depth=7):
             if isinstance(skus, list) and skus and not isinstance(skus[0], (str, int, float)):
                 skus = skus[0].get("spec_list") if isinstance(skus[0], dict) and skus[0].get("spec_list") else skus
 
-            # 常见价格字段
             for price_field in ("min_normal_price", "sale_price", "normal_price", "price", "min_price", "sku_price"):
                 pf = obj.get(price_field)
                 if isinstance(pf, dict) and pf.get("amount") is not None:
@@ -180,7 +131,6 @@ def deep_find_price(obj, depth=0, max_depth=7):
                 if isinstance(pf, (int, float)) and price is None:
                     price = pf
 
-            # 从 SKU 列表收集价格（拿最低的）
             sku_prices = []
             if isinstance(skus, list):
                 for s in skus:
@@ -205,7 +155,6 @@ def deep_find_price(obj, depth=0, max_depth=7):
                     "sku_prices": sku_prices,
                 }
 
-        # 继续向下递归
         for v in obj.values():
             r = deep_find_price(v, depth + 1, max_depth)
             if r:
@@ -218,8 +167,8 @@ def deep_find_price(obj, depth=0, max_depth=7):
     return None
 
 
-# ==================== 抓取单个商品 ====================
-def fetch_product(goods_id, session):
+# ==================== 浏览器抓取 ====================
+def fetch_product(goods_id, context):
     urls = [
         f"https://www.temu.com/g-{goods_id}.html",
         f"https://www.temu.com/goods.html?goods_id={goods_id}",
@@ -227,33 +176,30 @@ def fetch_product(goods_id, session):
     last_err = None
     for attempt in range(1, MAX_RETRY + 1):
         for url in urls:
+            page = None
             try:
-                resp = session.get(
-                    url,
-                    headers=HEADERS,
-                    impersonate="chrome131",
-                    timeout=45,
-                    allow_redirects=True,
-                )
-                log(f"  尝试{attempt}: HTTP {resp.status_code} | {len(resp.text)} bytes")
-                if resp.status_code != 200:
-                    last_err = f"HTTP {resp.status_code}"
-                    continue
-                html = resp.text
+                page = context.new_page()
+                log(f"  尝试{attempt}: {url}")
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                # 等待页面稳定，让 Cloudflare JS challenge 有时间执行
+                page.wait_for_timeout(random.randint(2500, 4000))
+                html = page.content()
+                log(f"    页面加载完成 | {len(html)} bytes")
+
                 if "__NEXT_DATA__" not in html:
-                    last_err = "页面无 __NEXT_DATA__（可能被反爬拦截或需人工验证）"
-                    # 提取 body 或整体前 500 字符帮助诊断
-                    body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
-                    preview = (body_m.group(1) if body_m else html)[:500].replace("\n", " ").replace("  ", " ")
-                    log(f"    ⚠️ {last_err}")
-                    log(f"    📄 HTML 预览: {preview}")
-                    # 检测常见拦截关键词
+                    last_err = "页面无 __NEXT_DATA__"
+                    # 检测常见拦截
                     lower = html.lower()
                     for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification"):
                         if kw in lower:
                             log(f"    🔒 检测到拦截关键词: {kw}")
                             break
+                    # 打印 body 前 300 字符帮助诊断
+                    body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
+                    preview = (body_m.group(1) if body_m else html)[:300].replace("\n", " ").replace("  ", " ")
+                    log(f"    📄 HTML 预览: {preview}")
                     continue
+
                 data = extract_next_data(html)
                 if not data:
                     last_err = "__NEXT_DATA__ 解析失败"
@@ -262,19 +208,14 @@ def fetch_product(goods_id, session):
                 result = deep_find_price(data)
                 if result and result.get("price") is not None:
                     return result
-                # 诊断信息：输出顶层结构，帮助定位
-                top_keys = list(data.keys())[:10]
-                pp = data.get("props", {}).get("pageProps", {})
-                pp_keys = list(pp.keys())[:15] if isinstance(pp, dict) else []
-                init_state = pp.get("initialState") if isinstance(pp, dict) else None
-                is_keys = list(init_state.keys())[:20] if isinstance(init_state, dict) else []
-                log(f"    ⚠️ 未找到价格字段 | 顶层={top_keys} | pageProps={pp_keys}")
-                if is_keys:
-                    log(f"    initialState keys={is_keys}")
                 last_err = "HTML 中未找到价格字段"
+                log(f"    ⚠️ {last_err}")
             except Exception as e:
                 last_err = str(e)
-                log(f"    ✗ 请求异常: {e}")
+                log(f"    ✗ 异常: {e}")
+            finally:
+                if page:
+                    page.close()
         if attempt < MAX_RETRY:
             wait = random.uniform(6, 12)
             log(f"  重试前等待 {wait:.1f}s ...")
@@ -285,7 +226,6 @@ def fetch_product(goods_id, session):
 
 # ==================== 数据更新 ====================
 def update_data(results):
-    """把本次抓取结果写入 data.json（保留历史快照，最多 5 条）"""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if os.path.exists(DATA_FILE):
         try:
@@ -331,46 +271,73 @@ def update_data(results):
 
 # ==================== 主流程 ====================
 def main():
-    log("🚀 Temu 价格监测启动（curl_cffi 版，无需浏览器）")
-    proxies = build_proxies()
-    session = cffi_requests.Session()
-    if proxies:
-        session.proxies = proxies
-
-    # 验证代理是否真正生效
-    verify_proxy(session)
-
-    # 先访问首页建立会话 cookies
-    log("🌐 预请求 Temu 首页建立 cookies...")
-    preflight(session)
+    log("🚀 Temu 价格监测启动（Playwright + 住宅代理版）")
+    proxy = parse_proxy()
+    if proxy:
+        log(f"🌐 代理已配置: {proxy['server']}")
+    else:
+        log("⚠️ 未配置代理，将直连（可能被风控）")
 
     products = load_products()
 
-    results = []
-    ok = fail = 0
-    for i, product in enumerate(products, 1):
-        gid = extract_goods_id(product)
-        if not gid:
-            log(f"[{i}/{len(products)}] ⚠️ 无法解析商品 ID: {product.get('id')}")
-            fail += 1
-            continue
-        log(f"[{i}/{len(products)}] 抓取 g-{gid}")
-        r = fetch_product(gid, session)
-        if r:
-            results.append(r)
-            ok += 1
-            sku_note = f"，{r['sku_count']} SKU" if r.get("sku_count") else ""
-            log(f"  ✅ {r['goods_name'][:40]} → ${r['price']}{sku_note}")
-        else:
-            fail += 1
-        if i < len(products):
-            time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ],
+        )
+
+        context_opts = {
+            "viewport": {"width": 1920, "height": 1080},
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
+        }
+        if proxy:
+            context_opts["proxy"] = proxy
+
+        context = browser.new_context(**context_opts)
+
+        # stealth: 覆盖 navigator.webdriver
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            window.chrome = { runtime: {} };
+        """)
+
+        results = []
+        ok = fail = 0
+        for i, product in enumerate(products, 1):
+            gid = extract_goods_id(product)
+            if not gid:
+                log(f"[{i}/{len(products)}] ⚠️ 无法解析商品 ID: {product.get('id')}")
+                fail += 1
+                continue
+            log(f"[{i}/{len(products)}] 抓取 g-{gid}")
+            r = fetch_product(gid, context)
+            if r:
+                results.append(r)
+                ok += 1
+                sku_note = f"，{r['sku_count']} SKU" if r.get("sku_count") else ""
+                log(f"  ✅ {r['goods_name'][:40]} → ${r['price']}{sku_note}")
+            else:
+                fail += 1
+            if i < len(products):
+                time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+
+        context.close()
+        browser.close()
 
     log(f"🏁 完成：成功 {ok} / 失败 {fail}")
 
     if results:
         update_data(results)
-        # 输出结果 JSON 供下游解析
         print("RESULT_JSON=" + json.dumps(results, ensure_ascii=False))
         sys.exit(0 if fail == 0 else 2)
     else:
