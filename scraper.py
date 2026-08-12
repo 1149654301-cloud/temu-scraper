@@ -180,26 +180,60 @@ def fetch_product(goods_id, context):
             try:
                 page = context.new_page()
                 log(f"  尝试{attempt}: {url}")
-                page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                # 等待页面稳定，让 Cloudflare JS challenge 有时间执行
-                page.wait_for_timeout(random.randint(2500, 4000))
-                html = page.content()
-                log(f"    页面加载完成 | {len(html)} bytes")
 
-                if "__NEXT_DATA__" not in html:
-                    last_err = "页面无 __NEXT_DATA__"
-                    # 检测常见拦截
+                # 先访问首页建立 cookies 和信任
+                if attempt == 1:
+                    try:
+                        home = context.new_page()
+                        home.goto("https://www.temu.com/", wait_until="domcontentloaded", timeout=30000)
+                        home.wait_for_timeout(3000)
+                        home.close()
+                        log("    首页预加载完成")
+                    except Exception as e:
+                        log(f"    首页预加载失败（非致命）: {e}")
+
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+                # 模拟人类行为：移动鼠标、滚动
+                page.mouse.move(random.randint(200, 800), random.randint(200, 600))
+                page.wait_for_timeout(random.randint(500, 1500))
+                page.mouse.wheel(0, random.randint(100, 400))
+                page.wait_for_timeout(random.randint(500, 1500))
+
+                # 循环检测：最多等待 20 秒，看 Cloudflare challenge 是否完成
+                html = ""
+                for check in range(8):  # 8 * 2.5s = 20s
+                    html = page.content()
+                    if "__NEXT_DATA__" in html:
+                        log(f"    ✓ 第 {check+1} 次检测发现 __NEXT_DATA__")
+                        break
                     lower = html.lower()
-                    for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification"):
-                        if kw in lower:
-                            log(f"    🔒 检测到拦截关键词: {kw}")
-                            break
-                    # 打印 body 前 300 字符帮助诊断
+                    challenge_kw = ["challenge", "captcha", "verification", "cloudflare", "checking your browser"]
+                    if any(kw in lower for kw in challenge_kw):
+                        log(f"    ⏳ 第 {check+1} 次检测到验证页面，等待 2.5s...")
+                        page.wait_for_timeout(2500)
+                        # 偶尔滚动一下，模拟人类
+                        if random.random() > 0.5:
+                            page.mouse.wheel(0, random.randint(50, 150))
+                    else:
+                        # 没有 challenge 也没有 __NEXT_DATA__，可能是其他页面
+                        log(f"    ⏳ 第 {check+1} 次检测，等待页面加载...")
+                        page.wait_for_timeout(2500)
+                else:
+                    # 循环结束仍未找到
+                    log(f"    页面加载完成 | {len(html)} bytes")
+                    last_err = "页面无 __NEXT_DATA__（Cloudflare 验证超时或失败）"
                     body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
                     preview = (body_m.group(1) if body_m else html)[:300].replace("\n", " ").replace("  ", " ")
+                    log(f"    ⚠️ {last_err}")
                     log(f"    📄 HTML 预览: {preview}")
+                    for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification"):
+                        if kw in html.lower():
+                            log(f"    🔒 检测到拦截关键词: {kw}")
+                            break
                     continue
 
+                log(f"    页面加载完成 | {len(html)} bytes")
                 data = extract_next_data(html)
                 if not data:
                     last_err = "__NEXT_DATA__ 解析失败"
@@ -282,11 +316,13 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=True,
+            headless=False,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-web-security",
                 "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
             ],
         )
 
@@ -304,11 +340,27 @@ def main():
 
         context = browser.new_context(**context_opts)
 
-        # stealth: 覆盖 navigator.webdriver
+        # stealth: 覆盖 navigator 指纹
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'plugins', {get: () => [
+                {name: "Chrome PDF Plugin", filename: "internal-pdf-viewer"},
+                {name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai"},
+                {name: "Native Client", filename: "internal-nacl-plugin"}
+            ]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+            Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
             window.chrome = { runtime: {} };
+            // 覆盖 Permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications'
+                    ? Promise.resolve({state: Notification.permission})
+                    : originalQuery(parameters)
+            );
         """)
 
         results = []
