@@ -468,7 +468,7 @@ def vision_request(image_b64):
                  "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
             ],
         }],
-        "max_tokens": 1200,
+        "max_tokens": 1024,
     }
     try:
         r = requests.post(VISION_API_URL, headers=headers, json=payload, timeout=90)
