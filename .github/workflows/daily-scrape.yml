@@ -1,0 +1,46 @@
+name: Temu 每日自动抓取
+
+on:
+  schedule:
+    # 每天 01:00 UTC = 北京时间 09:00（可自行修改）
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    # 允许在 GitHub 页面上手动点击"Run workflow"立即跑一次
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: temu-scrape
+      cancel-in-progress: false
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install chromium
+          sudo python -m playwright install-deps chromium
+
+      - name: 运行抓取（xvfb 虚拟显示器 + 有头浏览器）
+        env:
+          JSONBLOB_URL: ${{ secrets.JSONBLOB_URL }}
+          SCRAPE_OPERATOR: ${{ secrets.SCRAPE_OPERATOR }}
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x2000x24" python scraper.py
+
+      - name: 上传运行日志与诊断截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-logs
+          path: |
+            artifacts/
+          retention-days: 7
