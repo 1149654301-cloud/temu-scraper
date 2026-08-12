@@ -66,13 +66,25 @@ Temu 对数据中心 IP（GitHub 云端服务器）偶尔会弹出「按顺序�
 > 未配置 `VISION_API_KEY` 时行为与旧版一致：遇到验证码会跳过该商品并保留旧数据（日志会提示「未配置 VISION_API_KEY」）。
 > 也支持任何 OpenAI 兼容的视觉接口，把 `VISION_API_URL` / `VISION_MODEL` 换成你自己的即可。
 
-**支持的验证码题型**（自动识别 + 自动点击，共 4 种，覆盖 Temu 当前所有变体）：
+**支持的验证码题型**：
+
+✅ **自动处理（点击类）**
+- 顺序点击、频率题、排除题、匹配题（详见下方）
+
+⚠️ **当前不支持自动处理（会触发 Refresh 换题，连续 5 次仍抽中则跳过该商品保留旧数据）**
+- 拖拽拼图：`Drag the correct pipe(s)... in the direction shown by the arrows`（管道连通题）
+- 滑块验证：`Slide the piece to complete the puzzle`
+- 拖放配对、`puzzle` / `connect` / `rotate` 等需要 Drag 操作的题型
+- 文字点选（如 Click on characters in order）
+
+**4 种点击题型细节**：
 - **顺序点击**：`Click on the corresponding images in the following order: 'bicycle', 'dog', 'television'` 或 `按顺序点击 X Y Z`
 - **点击最频繁类型**：`Click on the type of fruit that appears most frequently`，先统计再点击所有该类型格子
 - **反向/排除题**：`Click on all images that do NOT match the following description: food`，点击所有不符合描述的格子
 - **正向匹配题**：`Click on all images that match the following description: vehicle`，点击所有符合描述的格子
 
 > 设计思路：模型直接返回 `click_cells`（最终要按顺序点击的格子编号数组），不论题型如何变化都由同一段点击逻辑执行。如反复失败，把 artifacts 里的 `*_captcha_fail.png` 发我调优 prompt。
+> Temu 验证码库持续更新，遇到新题型无法处理时脚本会自动 Refresh 换题重抽，若多次仍抽中不支持的题型则保留旧价格数据并跳过该商品，不影响其他商品。
 
 ### 第 4 步：立即验证一次（推荐）
 
