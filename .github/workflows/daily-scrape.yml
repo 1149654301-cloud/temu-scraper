@@ -47,12 +47,9 @@ jobs:
             echo "✅ 新链接已提交"
           fi
 
-      - name: 运行抓取（ScrapingBee 云渲染）
+      - name: 运行抓取（Apify 云抓取）
         env:
-          SCRAPINGBEE_API_KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
-          SCRAPINGBEE_PREMIUM: "false"
-          DELAY_MIN: "2"
-          DELAY_MAX: "5"
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
         run: python scraper.py
 
       - name: 提交价格数据
