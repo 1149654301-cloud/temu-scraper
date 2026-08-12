@@ -39,6 +39,7 @@ jobs:
           VISION_API_KEY: ${{ secrets.VISION_API_KEY }}
           VISION_API_URL: ${{ secrets.VISION_API_URL }}
           VISION_MODEL: ${{ secrets.VISION_MODEL }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x2000x24" python scraper.py
 
       - name: 上传运行日志与诊断截图
