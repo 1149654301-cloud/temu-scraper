@@ -36,6 +36,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: 安装 Playwright 浏览器
+        run: |
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
+
       - name: 追加新链接（若输入框填了链接）
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.new_links != '' }}
         run: |
@@ -49,7 +54,7 @@ jobs:
             echo "✅ 新链接已提交"
           fi
 
-      - name: 运行抓取（curl_cffi + 住宅代理，无需浏览器）
+      - name: 运行抓取（Playwright + 住宅代理）
         env:
           PROXY_URL: ${{ secrets.PROXY_URL }}
           DELAY_MIN: "2"
