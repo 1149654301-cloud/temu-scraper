@@ -2,8 +2,6 @@ name: Temu 价格自动监测
 
 on:
   schedule:
-    # 每 45 分钟跑一次（GitHub 免费额度限制下尽量高频）
-    # 如需更快可在 GitHub 页面上手动 "Run workflow"
     - cron: "0,45 * * * *"
   workflow_dispatch:
     inputs:
@@ -36,11 +34,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: 安装 Playwright 浏览器
-        run: |
-          python -m playwright install chromium
-          python -m playwright install-deps chromium
-
       - name: 追加新链接（若输入框填了链接）
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.new_links != '' }}
         run: |
@@ -54,15 +47,12 @@ jobs:
             echo "✅ 新链接已提交"
           fi
 
-      - name: 运行抓取（Playwright + 住宅代理 + xvfb）
+      - name: 运行抓取（cloudscraper + 住宅代理）
         env:
           PROXY_URL: ${{ secrets.PROXY_URL }}
           DELAY_MIN: "2"
           DELAY_MAX: "5"
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb
-          xvfb-run -a --server-args="-screen 0 1920x1080x24" python scraper.py
+        run: python scraper.py
 
       - name: 提交价格数据
         if: always()
