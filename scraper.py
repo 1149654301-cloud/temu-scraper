@@ -895,4 +895,15 @@ def main():
 
     if ok == 0:
         log("❌ 全部失败，不写回数据，避免破坏现有数据")
-        sys
+        sys.exit(1)
+
+    log("写回数据中心...")
+    if put_blob(data, etag):
+        log("✅ 数据已更新")
+    else:
+        log("❌ 写回失败")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
