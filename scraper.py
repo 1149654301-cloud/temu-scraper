@@ -64,6 +64,20 @@ UA = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
+# ---- 验证码自动识别（可选）----
+# 遇到"按顺序点击图片"验证码时，自动截图并调用视觉 AI 完成点击。
+# 推荐免费方案：智谱 bigmodel.cn 的 glm-4v-flash（OpenAI 兼容接口）
+#   VISION_API_KEY  = 智谱的 API Key
+#   VISION_API_URL  = https://open.bigmodel.cn/api/paas/v4/chat/completions
+#   VISION_MODEL    = glm-4v-flash
+# 未配置 VISION_API_KEY 时，遇到验证码会跳过该商品并留截图，行为与原来一致。
+VISION_API_KEY = env_or("VISION_API_KEY", "")
+VISION_API_URL = env_or(
+    "VISION_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+)
+VISION_MODEL = env_or("VISION_MODEL", "glm-4v-flash")
+CAPTCHA_RETRY = int(env_or("CAPTCHA_MAX_RETRY", "3"))
+
 
 def log(msg):
     print(msg, flush=True)
@@ -297,11 +311,244 @@ RAW_JS = r"""
 """
 
 
+# ============ 验证码自动识别（可选） ============
+# 目标验证码："按顺序点击图片"（如 Click in order: hamburger, keyboard, ...）。
+# 思路：找到验证码区域(iframe/弹窗) → 截图 → 视觉 AI 识别网格与顺序 → 模拟鼠标按序点击。
+CAPTCHA_INDICATORS = (
+    "captcha", "verify", "security-check", "geetest", "sec-cpt",
+    "hcaptcha", "turnstile", "validation", "challenge",
+)
+
+
+def _norm(name):
+    """物品名归一化：小写、去空格、去复数 s。"""
+    n = (name or "").strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+    if n.endswith("s") and not n.endswith("ss"):
+        n = n[:-1]
+    return n
+
+
+def detect_captcha(page):
+    """检测页面上是否出现验证码。"""
+    # 1) 验证码 iframe
+    for fr in page.frames:
+        u = (fr.url or "").lower()
+        if any(k in u for k in CAPTCHA_INDICATORS):
+            return True
+    # 2) 页面文字提示（兼容英文/中文）
+    try:
+        body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 800) : ''")
+        low = body.lower()
+        for kw in ("click in order", "select the following", "按顺序", "依次点击",
+                   "click every", "please select", "验证码", "verify you are human"):
+            if kw in low:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def find_captcha_box(page):
+    """返回验证码区域在页面上的 {x, y, width, height}（视口坐标）；找不到返回 None。"""
+    # 1) 验证码 iframe：frame_element() 拿到底层 <iframe> 元素，取 bounding box
+    for fr in page.frames:
+        u = (fr.url or "").lower()
+        if any(k in u for k in CAPTCHA_INDICATORS):
+            try:
+                el = fr.frame_element()
+                bb = el.bounding_box()
+                if bb and bb["width"] > 150 and bb["height"] > 150:
+                    return {k: int(v) for k, v in bb.items()}
+            except Exception:
+                pass
+    # 2) 页面内验证码容器（弹窗）
+    for sel in (
+        'iframe[src*="captcha" i]', 'iframe[src*="verify" i]',
+        'iframe[src*="sec" i]', 'iframe[src*="challenge" i]',
+        'div[class*="captcha" i]', 'div[id*="captcha" i]',
+        'div[class*="verify" i]', 'div[role="dialog"]',
+    ):
+        try:
+            els = page.locator(sel)
+            n = els.count()
+            for i in range(n):
+                bb = els.nth(i).bounding_box()
+                if bb and bb["width"] > 150 and bb["height"] > 150:
+                    # 弹窗需确认含验证码特征，避免误点普通弹窗
+                    txt = (els.nth(i).inner_text() or "")[:200]
+                    low = txt.lower()
+                    if any(k in low for k in ("click", "select", "按顺序", "依次", "captcha",
+                                              "验证", "human")):
+                        return {k: int(v) for k, v in bb.items()}
+        except Exception:
+            continue
+    return None
+
+
+def vision_request(image_b64):
+    """调用 OpenAI 兼容视觉接口，返回模型文本。"""
+    headers = {
+        "Authorization": f"Bearer {VISION_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": VISION_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": (
+                    "这是一张网页安全验证码截图。图片里通常上方有提示文字，下方是多张物品图片组成的网格。\n"
+                    "请完成：\n"
+                    "1) grid：物品网格在整张图中的相对包围框（左上角 left/top、右下角 right/bottom，0~1 小数，"
+                    "只包住物品图片网格，不含上方提示文字）。\n"
+                    "2) rows / cols：物品网格的行数和列数。\n"
+                    "3) cells：从左到右、从上到下给每个格子编号（从 1 开始），并识别每格物品的英文名"
+                    "（单数名词，如 phone、hamburger、keyboard、sports car、bookcase、peach）。\n"
+                    "4) order：读取图片中的提示文字（例如 Click in order: hamburger, keyboard, bookcase, peach, chair），"
+                    "提取要求按顺序点击的物品英文名列表；如果看不清或没有提示文字，返回空数组。\n"
+                    "只输出 JSON，不要代码块和任何解释："
+                    '{"grid":{"left":0.1,"top":0.2,"right":0.9,"bottom":0.95},"rows":3,"cols":3,'
+                    '"cells":[{"cell":1,"name":"phone"}],"order":["hamburger","keyboard"]}'
+                )},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+            ],
+        }],
+        "max_tokens": 1000,
+        "temperature": 0,
+    }
+    r = requests.post(VISION_API_URL, headers=headers, json=payload, timeout=90)
+    r.raise_for_status()
+    data = r.json()
+    return data["choices"][0]["message"]["content"]
+
+
+def _parse_vision_json(text):
+    """从模型输出中提取 JSON 对象。"""
+    text = (text or "").strip()
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m:
+        raise ValueError(f"视觉模型未返回 JSON: {text[:200]}")
+    return json.loads(m.group(0))
+
+
+def solve_captcha(page):
+    """自动完成一次验证码。成功返回 True，失败返回 False。"""
+    if not VISION_API_KEY:
+        log("  ⚠️ 检测到验证码，但未配置 VISION_API_KEY，无法自动处理")
+        return False
+
+    for attempt in range(1, CAPTCHA_RETRY + 1):
+        box = find_captcha_box(page)
+        if not box:
+            return True  # 已验证通过或已消失
+
+        # 截取验证码区域
+        try:
+            shot = page.screenshot(clip=box)
+        except Exception as e:
+            log(f"  ⚠️ 验证码截图失败: {e}")
+            time.sleep(3)
+            continue
+        b64 = base64.b64encode(shot).decode("ascii")
+
+        # AI 识别
+        try:
+            result = _parse_vision_json(vision_request(b64))
+        except Exception as e:
+            log(f"  ⚠️ 验证码识别失败(尝试 {attempt}/{CAPTCHA_RETRY}): {e}")
+            time.sleep(3)
+            continue
+
+        grid = result.get("grid") or {}
+        rows = int(result.get("rows") or 0)
+        cols = int(result.get("cols") or 0)
+        cells = result.get("cells") or []
+        order = [x.strip() for x in (result.get("order") or []) if str(x).strip()]
+        if rows <= 0 or cols <= 0 or not cells or not order:
+            log(f"  ⚠️ 验证码识别结果不完整(尝试 {attempt}/{CAPTCHA_RETRY})，重试")
+            time.sleep(3)
+            continue
+
+        # 建立 物品名 → 格子编号 映射
+        name2cell = {}
+        for c in cells:
+            nm = _norm(c.get("name"))
+            if nm and c.get("cell"):
+                name2cell[nm] = int(c["cell"])
+
+        # 按顺序点击
+        left = box["x"] + box["width"] * float(grid.get("left", 0.0))
+        top = box["y"] + box["height"] * float(grid.get("top", 0.0))
+        right = box["x"] + box["width"] * float(grid.get("right", 1.0))
+        bottom = box["y"] + box["height"] * float(grid.get("bottom", 1.0))
+        cw = (right - left) / cols
+        ch = (bottom - top) / rows
+
+        clicked = []
+        ok_all = True
+        for item in order:
+            ni = _norm(item)
+            cell = name2cell.get(ni)
+            if cell is None:
+                # 模糊匹配：识别名包含指令词，或指令词包含识别名
+                for k, v in name2cell.items():
+                    if ni in k or k in ni:
+                        cell = v
+                        break
+            if cell is None:
+                log(f"  ⚠️ 找不到物品 '{item}' 的位置，重试")
+                ok_all = False
+                break
+            row, col = divmod(cell - 1, cols)
+            x = left + (col + 0.5) * cw
+            y = top + (row + 0.5) * ch
+            try:
+                page.mouse.click(x, y)
+                clicked.append(f"{item}@({x:.0f},{y:.0f})")
+                time.sleep(1.2)  # 模拟人类点击间隔
+            except Exception as e:
+                log(f"  ⚠️ 点击 '{item}' 失败: {e}")
+                ok_all = False
+                break
+
+        if not ok_all:
+            time.sleep(3)
+            continue
+        log(f"  🖱️ 已按顺序点击: {' → '.join(clicked)}")
+
+        # 等待验证结果
+        time.sleep(4)
+        if not detect_captcha(page):
+            log("  ✅ 验证码已通过")
+            return True
+        log(f"  ⚠️ 点击后验证码仍在(尝试 {attempt}/{CAPTCHA_RETRY})，重试")
+        time.sleep(3)
+    return False
+
+
 def wait_for_content(page, timeout=90):
     """等待 Cloudflare 挑战通过、页面出现可抓取的数据。返回 (mode, data)。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
+            # 优先处理验证码：验证码弹窗期间页面拿不到任何数据
+            if detect_captcha(page):
+                log("  🧩 检测到验证码，尝试自动点击处理")
+                if solve_captcha(page):
+                    log("  ✅ 验证码已通过，继续加载数据")
+                else:
+                    try:
+                        pid_m = re.search(r"g-(\d+)\.html", page.url)
+                        name = pid_m.group(1) if pid_m else "captcha"
+                        page.screenshot(path=f"artifacts/{name}_captcha_fail.png")
+                    except Exception:
+                        pass
+                    log("  ❌ 验证码自动处理失败，本轮放弃，外层将重试")
+                    return None, None
+                time.sleep(2)
+                continue
+
             raw = page.evaluate(RAW_JS)
             if raw and raw.get("variants"):
                 return "raw", raw["variants"]
