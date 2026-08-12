@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Temu 价格监测 - Playwright 版（带住宅代理 + stealth）
+Temu 价格监测 - cloudscraper 版（绕过 Cloudflare challenge）
 
 原理：
-    用 Playwright 启动 Chromium，配置住宅代理和 stealth 参数，
-    访问商品页后提取 __NEXT_DATA__ 中的价格数据。
-    Playwright 能自动执行 Cloudflare 的 JS challenge，
-    住宅代理避免触发验证码。
+    cloudscraper 内置 JS 解释器，能自动解析并计算 Cloudflare IUAM challenge 的答案，
+    获取有效的 cookies 后再请求真实页面。配合住宅代理避免 IP 风控。
 
 环境变量：
     PROXY_URL    代理地址，如 http://user:pass@host:port
@@ -25,7 +23,7 @@ import time
 import random
 import datetime
 
-from playwright.sync_api import sync_playwright
+import cloudscraper
 
 
 def env_or(key, default=""):
@@ -45,28 +43,16 @@ def log(msg):
     print(f"[{ts}] {msg}", flush=True)
 
 
-# ==================== 代理解析 ====================
-def parse_proxy():
-    """解析 PROXY_URL 为 Playwright proxy 字典"""
+# ==================== 代理 ====================
+def build_proxies():
     if not PROXY_URL:
+        log("⚠️ 未配置 PROXY_URL，将直连访问（数据中心 IP 极易被风控，强烈建议配置住宅代理）")
         return None
     raw = PROXY_URL.strip()
     if "://" not in raw:
         raw = "http://" + raw
-    # 格式: http://user:pass@host:port
-    m = re.match(r"^(https?)://([^:]+):([^@]+)@(.+):(\d+)$", raw)
-    if m:
-        return {
-            "server": f"{m.group(1)}://{m.group(4)}:{m.group(5)}",
-            "username": m.group(2),
-            "password": m.group(3),
-        }
-    # 无认证格式: http://host:port
-    m2 = re.match(r"^(https?)://(.+):(\d+)$", raw)
-    if m2:
-        return {"server": raw}
-    log(f"⚠️ 代理格式无法解析，将直连: {raw}")
-    return None
+    log(f"🌐 代理已启用")
+    return {"http": raw, "https": raw}
 
 
 # ==================== 商品读取 ====================
@@ -167,8 +153,8 @@ def deep_find_price(obj, depth=0, max_depth=7):
     return None
 
 
-# ==================== 浏览器抓取 ====================
-def fetch_product(goods_id, context):
+# ==================== 抓取单个商品 ====================
+def fetch_product(goods_id, scraper):
     urls = [
         f"https://www.temu.com/g-{goods_id}.html",
         f"https://www.temu.com/goods.html?goods_id={goods_id}",
@@ -176,55 +162,17 @@ def fetch_product(goods_id, context):
     last_err = None
     for attempt in range(1, MAX_RETRY + 1):
         for url in urls:
-            page = None
             try:
-                page = context.new_page()
-                log(f"  尝试{attempt}: {url}")
-
-                # 先访问首页建立 cookies 和信任
-                if attempt == 1:
-                    try:
-                        home = context.new_page()
-                        home.goto("https://www.temu.com/", wait_until="domcontentloaded", timeout=30000)
-                        home.wait_for_timeout(3000)
-                        home.close()
-                        log("    首页预加载完成")
-                    except Exception as e:
-                        log(f"    首页预加载失败（非致命）: {e}")
-
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-                # 模拟人类行为：移动鼠标、滚动
-                page.mouse.move(random.randint(200, 800), random.randint(200, 600))
-                page.wait_for_timeout(random.randint(500, 1500))
-                page.mouse.wheel(0, random.randint(100, 400))
-                page.wait_for_timeout(random.randint(500, 1500))
-
-                # 循环检测：最多等待 20 秒，看 Cloudflare challenge 是否完成
-                html = ""
-                for check in range(8):  # 8 * 2.5s = 20s
-                    html = page.content()
-                    if "__NEXT_DATA__" in html:
-                        log(f"    ✓ 第 {check+1} 次检测发现 __NEXT_DATA__")
-                        break
-                    lower = html.lower()
-                    challenge_kw = ["challenge", "captcha", "verification", "cloudflare", "checking your browser"]
-                    if any(kw in lower for kw in challenge_kw):
-                        log(f"    ⏳ 第 {check+1} 次检测到验证页面，等待 2.5s...")
-                        page.wait_for_timeout(2500)
-                        # 偶尔滚动一下，模拟人类
-                        if random.random() > 0.5:
-                            page.mouse.wheel(0, random.randint(50, 150))
-                    else:
-                        # 没有 challenge 也没有 __NEXT_DATA__，可能是其他页面
-                        log(f"    ⏳ 第 {check+1} 次检测，等待页面加载...")
-                        page.wait_for_timeout(2500)
-                else:
-                    # 循环结束仍未找到
-                    log(f"    页面加载完成 | {len(html)} bytes")
-                    last_err = "页面无 __NEXT_DATA__（Cloudflare 验证超时或失败）"
+                resp = scraper.get(url, timeout=45)
+                log(f"  尝试{attempt}: HTTP {resp.status_code} | {len(resp.text)} bytes")
+                if resp.status_code != 200:
+                    last_err = f"HTTP {resp.status_code}"
+                    continue
+                html = resp.text
+                if "__NEXT_DATA__" not in html:
+                    last_err = "页面无 __NEXT_DATA__（可能被反爬拦截）"
                     body_m = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
-                    preview = (body_m.group(1) if body_m else html)[:300].replace("\n", " ").replace("  ", " ")
+                    preview = (body_m.group(1) if body_m else html)[:500].replace("\n", " ").replace("  ", " ")
                     log(f"    ⚠️ {last_err}")
                     log(f"    📄 HTML 预览: {preview}")
                     for kw in ("challenge", "captcha", "cloudflare", "blocked", "denied", "verification"):
@@ -232,8 +180,6 @@ def fetch_product(goods_id, context):
                             log(f"    🔒 检测到拦截关键词: {kw}")
                             break
                     continue
-
-                log(f"    页面加载完成 | {len(html)} bytes")
                 data = extract_next_data(html)
                 if not data:
                     last_err = "__NEXT_DATA__ 解析失败"
@@ -242,14 +188,15 @@ def fetch_product(goods_id, context):
                 result = deep_find_price(data)
                 if result and result.get("price") is not None:
                     return result
+                # 诊断信息
+                top_keys = list(data.keys())[:10]
+                pp = data.get("props", {}).get("pageProps", {})
+                pp_keys = list(pp.keys())[:15] if isinstance(pp, dict) else []
+                log(f"    ⚠️ 未找到价格字段 | 顶层={top_keys} | pageProps={pp_keys}")
                 last_err = "HTML 中未找到价格字段"
-                log(f"    ⚠️ {last_err}")
             except Exception as e:
                 last_err = str(e)
                 log(f"    ✗ 异常: {e}")
-            finally:
-                if page:
-                    page.close()
         if attempt < MAX_RETRY:
             wait = random.uniform(6, 12)
             log(f"  重试前等待 {wait:.1f}s ...")
@@ -305,86 +252,48 @@ def update_data(results):
 
 # ==================== 主流程 ====================
 def main():
-    log("🚀 Temu 价格监测启动（Playwright + 住宅代理版）")
-    proxy = parse_proxy()
-    if proxy:
-        log(f"🌐 代理已配置: {proxy['server']}")
-    else:
-        log("⚠️ 未配置代理，将直连（可能被风控）")
+    log("🚀 Temu 价格监测启动（cloudscraper 版，自动绕过 Cloudflare）")
+    proxies = build_proxies()
+
+    # cloudscraper 自动模拟 Chrome 指纹并处理 challenge
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+    if proxies:
+        scraper.proxies = proxies
+
+    # 可选：先访问首页建立 cookies
+    try:
+        home = scraper.get("https://www.temu.com/", timeout=30)
+        log(f"🌐 首页预加载: HTTP {home.status_code} | {len(home.text)} bytes")
+    except Exception as e:
+        log(f"⚠️ 首页预加载失败（非致命）: {e}")
 
     products = load_products()
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
-        )
-
-        context_opts = {
-            "viewport": {"width": 1920, "height": 1080},
-            "user_agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "locale": "en-US",
-            "timezone_id": "America/New_York",
-        }
-        if proxy:
-            context_opts["proxy"] = proxy
-
-        context = browser.new_context(**context_opts)
-
-        # stealth: 覆盖 navigator 指纹
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [
-                {name: "Chrome PDF Plugin", filename: "internal-pdf-viewer"},
-                {name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai"},
-                {name: "Native Client", filename: "internal-nacl-plugin"}
-            ]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-            Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
-            window.chrome = { runtime: {} };
-            // 覆盖 Permissions
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications'
-                    ? Promise.resolve({state: Notification.permission})
-                    : originalQuery(parameters)
-            );
-        """)
-
-        results = []
-        ok = fail = 0
-        for i, product in enumerate(products, 1):
-            gid = extract_goods_id(product)
-            if not gid:
-                log(f"[{i}/{len(products)}] ⚠️ 无法解析商品 ID: {product.get('id')}")
-                fail += 1
-                continue
-            log(f"[{i}/{len(products)}] 抓取 g-{gid}")
-            r = fetch_product(gid, context)
-            if r:
-                results.append(r)
-                ok += 1
-                sku_note = f"，{r['sku_count']} SKU" if r.get("sku_count") else ""
-                log(f"  ✅ {r['goods_name'][:40]} → ${r['price']}{sku_note}")
-            else:
-                fail += 1
-            if i < len(products):
-                time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-
-        context.close()
-        browser.close()
+    results = []
+    ok = fail = 0
+    for i, product in enumerate(products, 1):
+        gid = extract_goods_id(product)
+        if not gid:
+            log(f"[{i}/{len(products)}] ⚠️ 无法解析商品 ID: {product.get('id')}")
+            fail += 1
+            continue
+        log(f"[{i}/{len(products)}] 抓取 g-{gid}")
+        r = fetch_product(gid, scraper)
+        if r:
+            results.append(r)
+            ok += 1
+            sku_note = f"，{r['sku_count']} SKU" if r.get("sku_count") else ""
+            log(f"  ✅ {r['goods_name'][:40]} → ${r['price']}{sku_note}")
+        else:
+            fail += 1
+        if i < len(products):
+            time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
     log(f"🏁 完成：成功 {ok} / 失败 {fail}")
 
