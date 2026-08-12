@@ -1,0 +1,192 @@
+[
+  {
+    "name": "region",
+    "value": "211",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1817543505,
+    "sameSite": "lax"
+  },
+  {
+    "name": "language",
+    "value": "en",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1817543505,
+    "sameSite": "lax"
+  },
+  {
+    "name": "currency",
+    "value": "USD",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1817543505,
+    "sameSite": "lax"
+  },
+  {
+    "name": "timezone",
+    "value": "Asia%2FShanghai",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1818062477,
+    "sameSite": "lax"
+  },
+  {
+    "name": "img_sup",
+    "value": "avif%2Cwebp",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1789118477,
+    "sameSite": "lax"
+  },
+  {
+    "name": "_bee",
+    "value": "ZKtEypCv82UBfrSJq0TXYUD3amt67ape",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1818062482,
+    "sameSite": "lax"
+  },
+  {
+    "name": "AccessToken",
+    "value": "FMGNAE7X3LRSW25KM3V2TVNL2VLS6SRYJJK7NJ3JH6QXICHSBTQQ0110d3a77709",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "expirationDate": 1818059002,
+    "sameSite": "lax"
+  },
+  {
+    "name": "api_uid",
+    "value": "Cmw8Z2nfKSlOnuByJQhaAg==",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1807768746,
+    "sameSite": "lax"
+  },
+  {
+    "name": "dilx",
+    "value": "vLZC6aZzxBkFT4M6vrKJ-",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "expirationDate": 1818062482,
+    "sameSite": "lax"
+  },
+  {
+    "name": "hfsc",
+    "value": "L3yNe4034D3+25HLfw==",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "expirationDate": 1818062482,
+    "sameSite": "lax"
+  },
+  {
+    "name": "isLogin",
+    "value": "1786523002608",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1818059002,
+    "sameSite": "lax"
+  },
+  {
+    "name": "njrpl",
+    "value": "ZKtEypCv82UBfrSJq0TXYUD3amt67ape",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "expirationDate": 1818062482,
+    "sameSite": "lax"
+  },
+  {
+    "name": "user_uin",
+    "value": "BD3AFBTBIBCUI43XCEG3DEJVD4M55BMRIHOFF5J4",
+    "domain": ".temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "expirationDate": 1818059002,
+    "sameSite": "lax"
+  },
+  {
+    "name": "_hal_tag",
+    "value": "AEGmkR2g5q8l1ACEYP+/cmmBG+cv0Q5OEWvhlYfB0Foiyc+ZwqBn3UU8s8bOcXH8SBQyRcVGHzPyjwwSKHDL7A==",
+    "domain": ".www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "expirationDate": 1795163002,
+    "sameSite": "lax"
+  },
+  {
+    "name": "_nano_fp",
+    "value": "GWZoSWiAIjZASdiAZ3itw#pfkGD__rYIF4Id36i64SL",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1807768746,
+    "sameSite": "lax"
+  },
+  {
+    "name": "_ttc",
+    "value": "3.306y5bV3JmAa.1818059036",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1818059036,
+    "sameSite": "no_restriction"
+  },
+  {
+    "name": "_u_pa",
+    "value": "%7B%22nrpt%22%3A0%7D",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1818059003,
+    "sameSite": "lax"
+  },
+  {
+    "name": "g_state",
+    "value": "{\"i_l\":0,\"i_ll\":1786522987806,\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1786522987806,\"i_b\":\"hqK9BtDbIT2fM09CEe5WXz8bESQefemiXaqtgJhjcz8\"}",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": false,
+    "httpOnly": false,
+    "expirationDate": 1802074987,
+    "sameSite": "lax"
+  },
+  {
+    "name": "verifyAuthToken",
+    "value": "my6jaUFtV_O01OzTJhXT7wd932de4b4e865fccd",
+    "domain": "www.temu.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false,
+    "expirationDate": 1786612443,
+    "sameSite": "lax"
+  }
+]
