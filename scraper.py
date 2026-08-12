@@ -59,6 +59,29 @@ DELAY_SEC = int(env_or("DELAY_SEC", "5"))
 MAX_RETRY = int(env_or("MAX_RETRY", "3"))
 TEMU_COOKIES_RAW = env_or("TEMU_COOKIES", "")
 
+# ---- 住宅代理（可选）----
+# 用静态住宅 IP 替代 GitHub Actions 的数据中心 IP，大幅降低 Temu 验证码概率。
+# 格式示例（IPRoyal ISP 代理）：
+#   PROXY_URL=http://用户名:密码@113.20.53.99:12323
+# 未配置时不使用代理。
+PROXY_URL_RAW = env_or("PROXY_URL", "")
+PROXY = None
+if PROXY_URL_RAW:
+    try:
+        _pu = urllib.parse.urlsplit(
+            PROXY_URL_RAW if "://" in PROXY_URL_RAW else "http://" + PROXY_URL_RAW
+        )
+        PROXY = {
+            "server": f"{_pu.scheme}://{_pu.hostname}:{_pu.port or 80}",
+        }
+        if _pu.username:
+            PROXY["username"] = urllib.parse.unquote(_pu.username)
+        if _pu.password:
+            PROXY["password"] = urllib.parse.unquote(_pu.password)
+    except Exception as _e:
+        print(f"⚠️ PROXY_URL 解析失败，本次不使用代理: {_e}", flush=True)
+        PROXY = None
+
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -846,7 +869,7 @@ def main():
 
     ok = fail = 0
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        launch_kwargs = dict(
             headless=HEADLESS,
             args=[
                 "--disable-blink-features=AutomationControlled",
@@ -855,6 +878,12 @@ def main():
                 "--disable-gpu",
             ],
         )
+        if PROXY:
+            launch_kwargs["proxy"] = PROXY
+            log(f"代理已启用: {PROXY['server']}（静态住宅 IP）")
+        else:
+            log("未启用代理（使用 runner 数据中心 IP，可能触发验证码）")
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             user_agent=UA,
             locale="en-US",
