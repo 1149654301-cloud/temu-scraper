@@ -2,7 +2,7 @@ name: Temu 价格自动监测
 
 on:
   schedule:
-    - cron: "0,45 * * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
       new_links:
@@ -47,9 +47,10 @@ jobs:
             echo "✅ 新链接已提交"
           fi
 
-      - name: 运行抓取（cloudscraper + 住宅代理）
+      - name: 运行抓取（ScrapingBee 云渲染）
         env:
-          PROXY_URL: ${{ secrets.PROXY_URL }}
+          SCRAPINGBEE_API_KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
+          SCRAPINGBEE_PREMIUM: "false"
           DELAY_MIN: "2"
           DELAY_MAX: "5"
         run: python scraper.py
