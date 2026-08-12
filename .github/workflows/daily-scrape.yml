@@ -6,6 +6,12 @@ on:
     - cron: "0 1 * * *"
   workflow_dispatch:
     # 允许在 GitHub 页面上手动点击"Run workflow"立即跑一次
+    # 也可以在输入框里粘贴新链接，脚本会自动追加到 products.json 后抓取
+    inputs:
+      new_links:
+        description: '新增商品链接（可多个，用逗号/换行分隔；留空则只抓取现有链接）'
+        required: false
+        type: string
 
 jobs:
   scrape:
@@ -33,6 +39,19 @@ jobs:
           python -m playwright install chromium
           python -m playwright install-deps chromium
 
+      - name: 追加新链接（若输入框填了链接）
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.new_links != '' }}
+        run: |
+          python add_links.py "${{ inputs.new_links }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add products.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: 添加新商品链接 $(date -u +%Y-%m-%d_%H:%M)"
+            git push
+            echo "✅ 新链接已提交"
+          fi
+
       - name: 运行抓取（xvfb 虚拟显示器 + 有头浏览器）
         env:
           JSONBLOB_URL: ${{ secrets.JSONBLOB_URL }}
@@ -49,12 +68,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cookies/latest.json 2>/dev/null || true
+          git add cookies/latest.json products.json 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "chore: 自动续期 Temu cookie $(date -u +%Y-%m-%d_%H:%M)"
             git push
           else
-            echo "cookie 无变化，跳过提交"
+            echo "无变化，跳过提交"
           fi
 
       - name: 上传运行日志与诊断截图
