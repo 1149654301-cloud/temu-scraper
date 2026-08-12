@@ -66,6 +66,14 @@ Temu 对数据中心 IP（GitHub 云端服务器）偶尔会弹出「按顺序�
 > 未配置 `VISION_API_KEY` 时行为与旧版一致：遇到验证码会跳过该商品并保留旧数据（日志会提示「未配置 VISION_API_KEY」）。
 > 也支持任何 OpenAI 兼容的视觉接口，把 `VISION_API_URL` / `VISION_MODEL` 换成你自己的即可。
 
+**支持的验证码题型**（自动识别 + 自动点击，共 4 种，覆盖 Temu 当前所有变体）：
+- **顺序点击**：`Click on the corresponding images in the following order: 'bicycle', 'dog', 'television'` 或 `按顺序点击 X Y Z`
+- **点击最频繁类型**：`Click on the type of fruit that appears most frequently`，先统计再点击所有该类型格子
+- **反向/排除题**：`Click on all images that do NOT match the following description: food`，点击所有不符合描述的格子
+- **正向匹配题**：`Click on all images that match the following description: vehicle`，点击所有符合描述的格子
+
+> 设计思路：模型直接返回 `click_cells`（最终要按顺序点击的格子编号数组），不论题型如何变化都由同一段点击逻辑执行。如反复失败，把 artifacts 里的 `*_captcha_fail.png` 发我调优 prompt。
+
 ### 第 4 步：立即验证一次（推荐）
 
 1. 进入仓库 → 点顶部 **Actions** 标签
