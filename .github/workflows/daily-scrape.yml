@@ -2,10 +2,8 @@ name: Temu 每日自动抓取
 
 on:
   schedule:
-    # 每天 01:00 UTC = 北京时间 09:00（可自行修改）
     - cron: "0 1 * * *"
   workflow_dispatch:
-    # 允许在 GitHub 页面上手动点击"Run workflow"立即跑一次
 
 jobs:
   scrape:
@@ -26,7 +24,8 @@ jobs:
 
       - name: 安装依赖
         run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
           python -m playwright install chromium
           sudo python -m playwright install-deps chromium
 
