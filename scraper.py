@@ -82,9 +82,8 @@ def fetch_prices(goods_ids):
     payload = {
         "productUrls": goods_ids,
         "concurrency": 3,
-        "proxyConfig": {
+        "proxyConfiguration": {
             "useApifyProxy": True,
-            "apifyProxyGroups": ["RESIDENTIAL"],
         },
     }
     log(f"🚀 调用 Apify actor: {ACTOR_ID}")
