@@ -96,10 +96,11 @@ UA = (
 
 # ---- 验证码自动识别（可选）----
 # 遇到"按顺序点击图片"验证码时，自动截图并调用视觉 AI 完成点击。
-# 推荐免费方案：智谱 bigmodel.cn 的 glm-4v-flash（OpenAI 兼容接口）
-#   VISION_API_KEY  = 智谱的 API Key
-#   VISION_API_URL  = https://open.bigmodel.cn/api/paas/v4/chat/completions
-#   VISION_MODEL    = glm-4v-flash
+# 推荐方案：阿里云百炼 qwen-vl-max（识别准确率远高于免费 flash 级模型）
+#   VISION_API_KEY  = 阿里云百炼 DashScope API Key
+#   VISION_API_URL  = https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+#   VISION_MODEL    = qwen-vl-max   （也可 qwen-vl-plus，便宜一半）
+# 配置地址：https://bailian.console.aliyun.com/ → API-KEY 管理 → 创建新 API-KEY
 # 未配置 VISION_API_KEY 时，遇到验证码会跳过该商品并留截图，行为与原来一致。
 VISION_API_KEY = env_or("VISION_API_KEY", "")
 VISION_API_URL = env_or(
@@ -217,6 +218,20 @@ def save_latest_cookies(context):
         log(f"  ⚠️ 保存 cookie 异常: {_e}")
 
 
+def _humanize(page, min_wait=2.0, max_wait=5.0):
+    """模拟真实用户的随机滚动 + 鼠标移动 + 停留，降低风控触发率。"""
+    try:
+        import random as _r
+        page.mouse.move(_r.randint(200, 1000), _r.randint(200, 900))
+        scrolls = _r.randint(1, 3)
+        for _ in range(scrolls):
+            page.mouse.wheel(0, _r.randint(200, 700))
+            time.sleep(_r.uniform(0.4, 1.2))
+        time.sleep(_r.uniform(min_wait, max_wait))
+    except Exception:
+        time.sleep(min_wait)
+
+
 def inject_cookies(context, page):
     """先访问 Temu 首页建立站点上下文，再注入登录 cookie，最后刷新回首页。"""
     cookies = load_latest_cookies()
@@ -234,7 +249,7 @@ def inject_cookies(context, page):
         page.goto("https://www.temu.com/", wait_until="domcontentloaded", timeout=30000)
     except Exception:
         pass
-    time.sleep(3)
+    _humanize(page, 2.0, 4.0)
     return True
 
 
@@ -522,6 +537,7 @@ def vision_request(image_b64):
             "content": [
                 {"type": "text", "text": (
                     "这是一张网页安全验证码截图。图片里通常上方有英文提示文字，下方是若干图片组成的网格（多为 3x3 或 4x4）。\n"
+                    "【做题步骤】先从上到下、从左到右逐格仔细看每一张图，认出每格物品；再看上方提示文字确定题型；最后给出答案。\n"
                     "请先阅读上方提示文字判断题型，再返回 JSON。务必保证 click_cells 字段填的是「最终要按顺序点击的所有格子编号」（1 开始，从左到右、从上到下）。\n\n"
                     "【题型 A · 顺序点击】提示形如 Click on the corresponding images in the following order: 'X', 'Y', 'Z' 或 Click in order: X, Y。\n"
                     "  → type='order'。从 order 数组中按提示顺序解析出格子编号写入 click_cells（按点击顺序）。\n\n"
@@ -702,13 +718,14 @@ def solve_captcha(page):
         }.get(captcha_type, "未知题")
         log(f"  🎯 {type_label}：将点击格子 {click_cells}")
 
-        # 按顺序点击
+        # 按顺序点击（加随机抖动模拟真人）
+        import random as _rand
         clicked = []
         ok_all = True
         for cell in click_cells:
             row, col = divmod(cell - 1, cols)
-            x = left + (col + 0.5) * cw
-            y = top + (row + 0.5) * ch
+            x = left + (col + 0.5) * cw + _rand.uniform(-4, 4)
+            y = top + (row + 0.5) * ch + _rand.uniform(-4, 4)
             try:
                 page.mouse.click(x, y)
                 clicked.append(f"#{cell}@({x:.0f},{y:.0f})")
@@ -817,6 +834,7 @@ def scrape_product(page, pid):
     for attempt in range(1, MAX_RETRY + 1):
         try:
             log(f"  打开 {url} (尝试 {attempt}/{MAX_RETRY})")
+            _humanize(page, 1.2, 3.0)
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             mode, variants = wait_for_content(page, timeout=75)
             if mode == "login":
@@ -952,7 +970,24 @@ def main():
             extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
         )
         context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            """
+            // 清除自动化特征，伪装成真实 Chrome
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5].map(() => ({name: 'Chrome PDF Plugin'}))
+            });
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            window.chrome = window.chrome || {runtime: {}};
+            // 兜底覆盖早期页面探测
+            try {
+                const _gpo = Object.getOwnPropertyDescriptor;
+                Object.getOwnPropertyDescriptor = function(obj, prop) {
+                    if (obj === navigator && prop === 'webdriver') return {get: () => undefined};
+                    return _gpo.call(this, obj, prop);
+                };
+            } catch (e) {}
+            """
         )
         page = context.new_page()
         inject_cookies(context, page)
