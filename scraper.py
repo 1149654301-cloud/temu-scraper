@@ -64,11 +64,26 @@ def build_proxies():
     if not PROXY_URL:
         log("⚠️ 未配置 PROXY_URL，将直连访问（数据中心 IP 极易被风控，强烈建议配置住宅代理）")
         return None
-    raw = PROXY_URL
+    raw = PROXY_URL.strip()
     if "://" not in raw:
         raw = "http://" + raw
     log(f"代理已启用")
+    # 同时设置 libcurl 环境变量（小写），为 curl_cffi 提供兜底代理
+    os.environ["http_proxy"] = raw
+    os.environ["https_proxy"] = raw
     return {"http": raw, "https": raw}
+
+
+def verify_proxy(session):
+    """请求 ipify 确认代理是否真正生效"""
+    try:
+        r = session.get("https://api.ipify.org?format=json", timeout=15, impersonate="chrome120")
+        ip = r.json().get("ip", "unknown")
+        log(f"🌐 当前出口 IP: {ip}")
+        return ip
+    except Exception as e:
+        log(f"⚠️ IP 检测失败: {e}")
+        return None
 
 
 # ==================== 商品读取 ====================
@@ -179,7 +194,7 @@ def deep_find_price(obj, depth=0, max_depth=7):
 
 
 # ==================== 抓取单个商品 ====================
-def fetch_product(goods_id, proxies):
+def fetch_product(goods_id, session):
     urls = [
         f"https://www.temu.com/g-{goods_id}.html",
         f"https://www.temu.com/goods.html?goods_id={goods_id}",
@@ -188,10 +203,9 @@ def fetch_product(goods_id, proxies):
     for attempt in range(1, MAX_RETRY + 1):
         for url in urls:
             try:
-                resp = cffi_requests.get(
+                resp = session.get(
                     url,
                     headers=HEADERS,
-                    proxies=proxies,
                     impersonate="chrome120",
                     timeout=45,
                     allow_redirects=True,
@@ -203,7 +217,9 @@ def fetch_product(goods_id, proxies):
                 html = resp.text
                 if "__NEXT_DATA__" not in html:
                     last_err = "页面无 __NEXT_DATA__（可能被反爬拦截或需人工验证）"
+                    preview = html[:300].replace("\n", " ")
                     log(f"    ⚠️ {last_err}")
+                    log(f"    📄 HTML 预览: {preview}")
                     continue
                 data = extract_next_data(html)
                 if not data:
@@ -284,6 +300,13 @@ def update_data(results):
 def main():
     log("🚀 Temu 价格监测启动（curl_cffi 版，无需浏览器）")
     proxies = build_proxies()
+    session = cffi_requests.Session()
+    if proxies:
+        session.proxies = proxies
+
+    # 验证代理是否真正生效
+    verify_proxy(session)
+
     products = load_products()
 
     results = []
@@ -295,7 +318,7 @@ def main():
             fail += 1
             continue
         log(f"[{i}/{len(products)}] 抓取 g-{gid}")
-        r = fetch_product(gid, proxies)
+        r = fetch_product(gid, session)
         if r:
             results.append(r)
             ok += 1
