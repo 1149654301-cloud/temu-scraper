@@ -33,6 +33,7 @@ jobs:
         env:
           JSONBLOB_URL: ${{ secrets.JSONBLOB_URL }}
           SCRAPE_OPERATOR: ${{ secrets.SCRAPE_OPERATOR }}
+          TEMU_COOKIES: ${{ secrets.TEMU_COOKIES }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x2000x24" python scraper.py
 
       - name: 上传运行日志与诊断截图
