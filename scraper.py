@@ -328,32 +328,61 @@ def _norm(name):
     return n
 
 
+def _captcha_kind(page):
+    """识别验证码题型:
+    - 'click': 可自动处理的点击类（顺序/频率/排除/匹配）
+    - 'drag': 拖拽/滑块/拼图类（当前不支持自动处理，需 Refresh 换题）
+    - None: 没检测到验证码
+    """
+    try:
+        body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 1500) : ''")
+    except Exception:
+        return None
+    low = body.lower()
+
+    # 拖拽/滑块/拼图类（当前无法自动处理）
+    drag_kws = (
+        "drag the", "drag and drop", "slide the", "swipe to",
+        "puzzle", "connect the", "in the direction shown", "flow shown",
+        "water flow", "follow the arrow", "follow the arrows",
+        "matching text", "trace the", "rotate", "tilt",
+        "拖动", "拖拽", "拼合", "拼图", "滑动",
+    )
+    for kw in drag_kws:
+        if kw in low:
+            return "drag"
+
+    # 点击类（顺序/频率/排除/匹配/通用人机验证）
+    click_kws = (
+        "click in order", "click on", "click the", "click every",
+        "in the following order", "select the", "select all",
+        "appears most", "most frequently", "do not match", "following description",
+        "verify you are human", "security verification", "robot check",
+        "are you human", "human verification", "i'm not a robot",
+    )
+    for kw in click_kws:
+        if kw in low:
+            return "click"
+    return None
+
+
 def detect_captcha(page):
-    """检测页面上是否出现验证码（覆盖「按顺序点击」与「点击最频繁类型」等题型）。"""
+    """检测页面上是否出现验证码（兼容旧调用，返回 bool）。"""
     # 1) 验证码 iframe
     for fr in page.frames:
         u = (fr.url or "").lower()
         if any(k in u for k in CAPTCHA_INDICATORS):
             return True
-    # 2) 页面文字提示（兼容英文/中文，覆盖顺序点击、最频繁、滑块、人机验证等）
+    # 2) 文本检测（通过 _captcha_kind 判定）
+    if _captcha_kind(page) is not None:
+        return True
+    # 3) 兜底：含 captcha/verification 文本且页面有多张图片
     try:
         body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 1200) : ''")
-        low = body.lower()
-        for kw in ("click in order", "click the following", "select the following",
-                   "按顺序", "依次点击", "click every", "please select",
-                   "验证码", "verify you are human", "security verification",
-                   "most frequently", "appears most", "fruit", "human verification",
-                   "robot check", "are you human", "i'm not a robot"):
-            if kw in low:
+        if "captcha" in body.lower() or "verification" in body.lower() or "verify" in body.lower():
+            imgs = page.evaluate("() => document.querySelectorAll('img').length")
+            if imgs and imgs >= 4:
                 return True
-        # 兜底：若页面内出现多个 img 且文本含 captcha/verify/verification，也认作验证码
-        if "captcha" in low or "verification" in low or "verify" in low:
-            try:
-                imgs = page.evaluate("() => document.querySelectorAll('img').length")
-                if imgs and imgs >= 4:
-                    return True
-            except Exception:
-                pass
     except Exception:
         pass
     return False
@@ -455,6 +484,40 @@ def _parse_vision_json(text):
     if not m:
         raise ValueError(f"视觉模型未返回 JSON: {text[:200]}")
     return json.loads(m.group(0))
+
+
+def refresh_captcha(page, max_attempts=5):
+    """遇到拖拽/滑块类无法自动处理的验证码时，点 Refresh 按钮换新题。
+    返回 True 表示换到了可处理或已消失；返回 False 表示连续 max_attempts 次仍是拖拽题。
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            clicked = False
+            for sel in ('button:has-text("Refresh")', 'a:has-text("Refresh")',
+                        'text="Refresh"', '[role="button"]:has-text("Refresh")'):
+                btn = page.locator(sel)
+                if btn.count():
+                    btn.first.click()
+                    clicked = True
+                    break
+            if not clicked:
+                log("  ℹ️ 未找到 Refresh 按钮，可能验证码已消失")
+                return True
+            log(f"  🔄 点击 Refresh 换新题 ({attempt}/{max_attempts})")
+            time.sleep(4)
+            kind = _captcha_kind(page)
+            if kind is None:
+                log("  ✅ 换题后验证码已消失")
+                return True
+            if kind == "click":
+                log("  ✅ 换题后变为可处理的点击题")
+                return True
+            log(f"  ⚠️ 换题后仍是 {kind} 类型，继续换")
+        except Exception as e:
+            log(f"  ⚠️ Refresh 异常: {e}")
+            time.sleep(2)
+    log(f"  ❌ 连续 {max_attempts} 次换题仍是非点击题，本商品放弃")
+    return False
 
 
 def solve_captcha(page):
@@ -602,7 +665,23 @@ def wait_for_content(page, timeout=90):
         try:
             # 优先处理验证码：验证码弹窗期间页面拿不到任何数据
             if detect_captcha(page):
-                log("  🧩 检测到验证码，尝试自动点击处理")
+                kind = _captcha_kind(page) or "click"
+                log(f"  🧩 检测到验证码（类型: {kind}）")
+                if kind == "drag":
+                    # 拖拽/滑块/拼图类：当前不支持自动处理，尝试换题
+                    if not refresh_captcha(page):
+                        try:
+                            pid_m = re.search(r"g-(\d+)\.html", page.url)
+                            name = pid_m.group(1) if pid_m else "captcha"
+                            page.screenshot(path=f"artifacts/{name}_unsupported.png")
+                        except Exception:
+                            pass
+                        log("  ❌ 多次换题后仍是不可处理题型，本商品放弃")
+                        return None, None
+                    # Refresh 后要么消失要么换成了 click，让下一轮 detect_captcha 接管
+                    time.sleep(2)
+                    continue
+                # click 类型：调用视觉模型自动点击
                 if solve_captcha(page):
                     log("  ✅ 验证码已通过，继续加载数据")
                 else:
