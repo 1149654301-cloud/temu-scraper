@@ -329,20 +329,31 @@ def _norm(name):
 
 
 def detect_captcha(page):
-    """检测页面上是否出现验证码。"""
+    """检测页面上是否出现验证码（覆盖「按顺序点击」与「点击最频繁类型」等题型）。"""
     # 1) 验证码 iframe
     for fr in page.frames:
         u = (fr.url or "").lower()
         if any(k in u for k in CAPTCHA_INDICATORS):
             return True
-    # 2) 页面文字提示（兼容英文/中文）
+    # 2) 页面文字提示（兼容英文/中文，覆盖顺序点击、最频繁、滑块、人机验证等）
     try:
-        body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 800) : ''")
+        body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 1200) : ''")
         low = body.lower()
-        for kw in ("click in order", "select the following", "按顺序", "依次点击",
-                   "click every", "please select", "验证码", "verify you are human"):
+        for kw in ("click in order", "click the following", "select the following",
+                   "按顺序", "依次点击", "click every", "please select",
+                   "验证码", "verify you are human", "security verification",
+                   "most frequently", "appears most", "fruit", "human verification",
+                   "robot check", "are you human", "i'm not a robot"):
             if kw in low:
                 return True
+        # 兜底：若页面内出现多个 img 且文本含 captcha/verify/verification，也认作验证码
+        if "captcha" in low or "verification" in low or "verify" in low:
+            try:
+                imgs = page.evaluate("() => document.querySelectorAll('img').length")
+                if imgs and imgs >= 4:
+                    return True
+            except Exception:
+                pass
     except Exception:
         pass
     return False
@@ -378,7 +389,8 @@ def find_captcha_box(page):
                     txt = (els.nth(i).inner_text() or "")[:200]
                     low = txt.lower()
                     if any(k in low for k in ("click", "select", "按顺序", "依次", "captcha",
-                                              "验证", "human")):
+                                              "验证", "human", "verification",
+                                              "frequently", "fruit", "robot")):
                         return {k: int(v) for k, v in bb.items()}
         except Exception:
             continue
@@ -397,24 +409,37 @@ def vision_request(image_b64):
             "role": "user",
             "content": [
                 {"type": "text", "text": (
-                    "这是一张网页安全验证码截图。图片里通常上方有提示文字，下方是多张物品图片组成的网格。\n"
-                    "请完成：\n"
-                    "1) grid：物品网格在整张图中的相对包围框（左上角 left/top、右下角 right/bottom，0~1 小数，"
-                    "只包住物品图片网格，不含上方提示文字）。\n"
-                    "2) rows / cols：物品网格的行数和列数。\n"
-                    "3) cells：从左到右、从上到下给每个格子编号（从 1 开始），并识别每格物品的英文名"
-                    "（单数名词，如 phone、hamburger、keyboard、sports car、bookcase、peach）。\n"
-                    "4) order：读取图片中的提示文字（例如 Click in order: hamburger, keyboard, bookcase, peach, chair），"
-                    "提取要求按顺序点击的物品英文名列表；如果看不清或没有提示文字，返回空数组。\n"
-                    "只输出 JSON，不要代码块和任何解释："
-                    '{"grid":{"left":0.1,"top":0.2,"right":0.9,"bottom":0.95},"rows":3,"cols":3,'
-                    '"cells":[{"cell":1,"name":"phone"}],"order":["hamburger","keyboard"]}'
+                    "这是一张网页安全验证码截图。图片里通常上方有英文提示文字，下方是若干图片组成的网格（多为 3x3 或 4x4）。\n"
+                    "请先阅读上方提示文字判断题型，再返回 JSON。务必保证 click_cells 字段填的是「最终要按顺序点击的所有格子编号」（1 开始，从左到右、从上到下）。\n\n"
+                    "【题型 A · 顺序点击】提示形如 Click on the corresponding images in the following order: 'X', 'Y', 'Z' 或 Click in order: X, Y。\n"
+                    "  → type='order'。从 order 数组中按提示顺序解析出格子编号写入 click_cells（按点击顺序）。\n\n"
+                    "【题型 B · 点击最频繁类型】提示形如 Please click on the type of fruit that appears most frequently / Select the image that appears most often。\n"
+                    "  → type='frequency'。统计每种物品出现次数（仅算提示明确指定的类别，如「水果」「动物」），忽略明显不属于该类别的，"
+                    "把出现最多的物品名写入 most_frequent，并把该物品所在的全部格子编号写入 click_cells。\n\n"
+                    "【题型 C · 反向/排除题】提示形如 Click on all images that do not match the following description: food / Click on all images that are NOT vehicles。\n"
+                    "  → type='exclude'。描述关键词写入 exclude_description，并把所有「不匹配该描述」的格子编号写入 click_cells。"
+                    "若提示要求点击不符合描述的图（例如 9 格里只有 3 张是 food，要点剩下的 6 张）。\n\n"
+                    "【题型 D · 正向匹配题】提示形如 Click on all images that match the following description: food / Click on all images that are vehicles。\n"
+                    "  → type='match'。描述关键词写入 match_description，并把所有「匹配该描述」的格子编号写入 click_cells。\n\n"
+                    "统一返回 JSON（必须包含 click_cells）：\n"
+                    "{\n"
+                    '  "type": "order" | "frequency" | "exclude" | "match",\n'
+                    '  "grid": {"left":0.10,"top":0.22,"right":0.92,"bottom":0.96},\n'
+                    '  "rows": 3, "cols": 3,\n'
+                    '  "cells": [{"cell":1,"name":"pear"}, {"cell":2,"name":"peach"}, ...],\n'
+                    '  "order": ["bicycle","dog","television"],    // 仅 type=order\n'
+                    '  "most_frequent": "pear",                     // 仅 type=frequency\n'
+                    '  "exclude_description": "food",               // 仅 type=exclude\n'
+                    '  "match_description": "food",                 // 仅 type=match\n'
+                    '  "click_cells": [3, 2, 6]                     // 必须：最终按顺序点击的全部格子编号\n'
+                    "}\n"
+                    "只输出 JSON，不要代码块、不要任何解释。"
                 )},
                 {"type": "image_url",
                  "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
             ],
         }],
-        "max_tokens": 1000,
+        "max_tokens": 1200,
         "temperature": 0,
     }
     r = requests.post(VISION_API_URL, headers=headers, json=payload, timeout=90)
@@ -464,20 +489,12 @@ def solve_captcha(page):
         rows = int(result.get("rows") or 0)
         cols = int(result.get("cols") or 0)
         cells = result.get("cells") or []
-        order = [x.strip() for x in (result.get("order") or []) if str(x).strip()]
-        if rows <= 0 or cols <= 0 or not cells or not order:
+        if rows <= 0 or cols <= 0 or not cells:
             log(f"  ⚠️ 验证码识别结果不完整(尝试 {attempt}/{CAPTCHA_RETRY})，重试")
             time.sleep(3)
             continue
 
-        # 建立 物品名 → 格子编号 映射
-        name2cell = {}
-        for c in cells:
-            nm = _norm(c.get("name"))
-            if nm and c.get("cell"):
-                name2cell[nm] = int(c["cell"])
-
-        # 按顺序点击
+        # 计算网格坐标
         left = box["x"] + box["width"] * float(grid.get("left", 0.0))
         top = box["y"] + box["height"] * float(grid.get("top", 0.0))
         right = box["x"] + box["width"] * float(grid.get("right", 1.0))
@@ -485,40 +502,91 @@ def solve_captcha(page):
         cw = (right - left) / cols
         ch = (bottom - top) / rows
 
+        # 优先使用模型直接给出的 click_cells（推荐，最稳健）
+        captcha_type = (result.get("type") or "").lower().strip()
+        click_cells = result.get("click_cells") or []
+        click_cells = [int(x) for x in click_cells if str(x).strip().lstrip("-").isdigit() and int(x) >= 1]
+        click_cells = [c for c in click_cells if c <= rows * cols]
+
+        # 兜底：若模型没返回 click_cells，根据 type 用其他字段推导
+        if not click_cells:
+            name2cell = {}
+            for c in cells:
+                nm = _norm(c.get("name"))
+                if nm and c.get("cell"):
+                    name2cell.setdefault(nm, []).append(int(c["cell"]))
+
+            if captcha_type == "frequency" or "most_frequent" in result:
+                target = (result.get("most_frequent") or "").strip()
+                click_cells = name2cell.get(_norm(target), [])
+                if not target or not click_cells:
+                    log(f"  ⚠️ 频率题识别不全(尝试 {attempt}/{CAPTCHA_RETRY})，重试")
+                    time.sleep(3)
+                    continue
+            else:
+                # 默认按顺序点击处理
+                order = [x.strip() for x in (result.get("order") or []) if str(x).strip()]
+                if not order:
+                    log(f"  ⚠️ 顺序题识别结果为空(尝试 {attempt}/{CAPTCHA_RETRY})，重试")
+                    time.sleep(3)
+                    continue
+                for item in order:
+                    ni = _norm(item)
+                    cand = name2cell.get(ni)
+                    if cand is None:
+                        for k, vs in name2cell.items():
+                            if ni in k or k in ni:
+                                cand = vs; break
+                    if not cand:
+                        log(f"  ⚠️ 找不到物品 '{item}' 的位置，重试")
+                        click_cells = []
+                        break
+                    click_cells.append(cand[0])
+                if not click_cells:
+                    time.sleep(3)
+                    continue
+
+        type_label = {
+            "order": "顺序题", "frequency": "频率题",
+            "exclude": "排除题", "match": "匹配题",
+        }.get(captcha_type, "未知题")
+        log(f"  🎯 {type_label}：将点击格子 {click_cells}")
+
+        # 按顺序点击
         clicked = []
         ok_all = True
-        for item in order:
-            ni = _norm(item)
-            cell = name2cell.get(ni)
-            if cell is None:
-                # 模糊匹配：识别名包含指令词，或指令词包含识别名
-                for k, v in name2cell.items():
-                    if ni in k or k in ni:
-                        cell = v
-                        break
-            if cell is None:
-                log(f"  ⚠️ 找不到物品 '{item}' 的位置，重试")
-                ok_all = False
-                break
+        for cell in click_cells:
             row, col = divmod(cell - 1, cols)
             x = left + (col + 0.5) * cw
             y = top + (row + 0.5) * ch
             try:
                 page.mouse.click(x, y)
-                clicked.append(f"{item}@({x:.0f},{y:.0f})")
-                time.sleep(1.2)  # 模拟人类点击间隔
+                clicked.append(f"#{cell}@({x:.0f},{y:.0f})")
+                time.sleep(1.0)  # 模拟人类点击间隔
             except Exception as e:
-                log(f"  ⚠️ 点击 '{item}' 失败: {e}")
+                log(f"  ⚠️ 点击格子 #{cell} 失败: {e}")
                 ok_all = False
                 break
 
         if not ok_all:
             time.sleep(3)
             continue
-        log(f"  🖱️ 已按顺序点击: {' → '.join(clicked)}")
+        log(f"  🖱️ 已点击: {'; '.join(clicked)}")
+
+        # 选完后通常有 Submit 按钮；无论是顺序题还是频率/排除题都点一下 Submit 兜底
+        try:
+            for sel in ('button:has-text("Submit")', 'button:has-text("Verify")',
+                        '[role="button"]:has-text("Submit")'):
+                btn = page.locator(sel)
+                if btn.count():
+                    btn.first.click()
+                    log("  🖱️ 已点击 Submit/Verify")
+                    break
+        except Exception:
+            pass
 
         # 等待验证结果
-        time.sleep(4)
+        time.sleep(5)
         if not detect_captcha(page):
             log("  ✅ 验证码已通过")
             return True
