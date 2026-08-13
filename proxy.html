@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Temu Tracker Proxy</title>
+</head>
+<body>
+<script>
+(function(){
+  'use strict';
+  const GH_OWNER='1149654301-cloud';
+  const GH_REPO='temu-scraper';
+  const GH_PATH='data.json';
+  const API_URL=`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_PATH}`;
+  // 允许 Temu 主站发起上传请求
+  const ALLOWED_ORIGINS=['https://www.temu.com','https://temu.com'];
+
+  function send(origin, data){
+    if(window.parent && window.parent!==window){
+      try{
+        window.parent.postMessage(Object.assign({type:'temu_proxy_result'}, data), origin);
+      }catch(e){}
+    }
+  }
+
+  window.addEventListener('message', async (e)=>{
+    if(!ALLOWED_ORIGINS.includes(e.origin)) return;
+    if(!e.data || e.data.type!=='temu_upload') return;
+
+    const token=e.data.token;
+    const payload=e.data.payload;
+    if(!token){
+      send(e.origin, {status:'error', message:'缺少 GitHub Token'});
+      return;
+    }
+    if(!payload){
+      send(e.origin, {status:'error', message:'缺少上传数据'});
+      return;
+    }
+
+    try{
+      const {pid, product_name, operator, snapshot}=payload;
+      const results=snapshot && Array.isArray(snapshot.v) ? snapshot.v : [];
+      if(!results.length){
+        send(e.origin, {status:'error', message:'没有价格数据'});
+        return;
+      }
+
+      // 读取当前 data.json
+      let existing={p:[]};
+      let sha=null;
+      const getResp=await fetch(API_URL,{
+        headers:{Accept:'application/vnd.github+json', Authorization:'Bearer '+token}
+      });
+      if(getResp.ok){
+        const data=await getResp.json();
+        sha=data.sha;
+        const content=atob(data.content.replace(/\s/g,''));
+        try{existing=JSON.parse(content);}catch(err){existing={p:[]};}
+      }else if(getResp.status===401){
+        send(e.origin, {status:'error', message:'Token 无效或已过期'});
+        return;
+      }else if(getResp.status===404){
+        existing={p:[]};
+      }else{
+        send(e.origin, {status:'error', message:'读取仓库失败: HTTP '+getResp.status});
+        return;
+      }
+
+      if(!existing.p||!Array.isArray(existing.p)) existing={p:[]};
+
+      // 查找或创建商品
+      let product=existing.p.find(p=>p.id===pid);
+      if(!product){
+        product={id:pid, nm:product_name, vn:results.map(r=>r.n), vo:results.map(r=>r.o), ss:[]};
+        existing.p.push(product);
+      }
+      // 更新变体名/原价
+      results.forEach(r=>{
+        const idx=product.vn.indexOf(r.n);
+        if(idx===-1){product.vn.push(r.n);product.vo.push(r.o);}
+        else if(product.vo[idx]==null){product.vo[idx]=r.o;}
+      });
+      // 添加 snapshot（价格数组与 vn 顺序对齐）
+      const priceArr=product.vn.map(name=>{const r=results.find(x=>x.n===name);return r?r.p:null;});
+      product.ss.unshift({t:snapshot.t, op:operator, v:priceArr});
+      product.lu=snapshot.t;
+
+      const newContent=btoa(unescape(encodeURIComponent(JSON.stringify(existing))));
+
+      // 写入仓库
+      const putBody={message:`Update ${GH_PATH} via iframe proxy`, content:newContent};
+      if(sha) putBody.sha=sha;
+      const putResp=await fetch(API_URL,{
+        method:'PUT',
+        headers:{Accept:'application/vnd.github+json', Authorization:'Bearer '+token, 'Content-Type':'application/json'},
+        body:JSON.stringify(putBody)
+      });
+
+      if(putResp.ok){
+        send(e.origin, {status:'ok', message:'上传成功'});
+      }else{
+        const err=await putResp.json().catch(()=>({}));
+        send(e.origin, {status:'error', message:'上传失败: HTTP '+putResp.status+' '+(err.message||'')});
+      }
+    }catch(err){
+      send(e.origin, {status:'error', message:'上传异常: '+err.message});
+    }
+  });
+})();
+</script>
+</body>
+</html>
