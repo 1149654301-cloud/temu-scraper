@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上传价格数据 - Temu 价格追踪器</title>
+<style>
+:root {
+  --bg: #f5f6fa; --card: #fff; --text: #2d3436; --text-secondary: #636e72;
+  --border: #e8ecf1; --accent: #e87400; --green: #00b894; --red: #e17055;
+  --shadow: 0 2px 12px rgba(0,0,0,0.06);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+header { background:linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #e87400 100%); color:#fff; padding:28px 32px; }
+header h1 { font-size:22px; font-weight:700; }
+header p { opacity:0.7; margin-top:6px; font-size:14px; }
+.container { max-width:720px; margin:0 auto; padding:24px; }
+.card { background:var(--card); border-radius:12px; padding:24px; box-shadow:var(--shadow); border:1px solid var(--border); margin-bottom:20px; }
+.status { display:flex; align-items:center; gap:12px; padding:16px; border-radius:10px; font-weight:600; }
+.status.loading { background:#fff3cd; color:#856404; }
+.status.success { background:#d4fceb; color:#007a50; }
+.status.error { background:#fce8e6; color:#c0392b; }
+.status .spinner { width:20px; height:20px; border:2px solid currentColor; border-top-color:transparent; border-radius:50%; animation:spin 1s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.btn { display:inline-block; background:var(--accent); color:#fff; padding:10px 20px; border-radius:8px; text-decoration:none; font-size:14px; font-weight:600; border:none; cursor:pointer; }
+.btn:hover { opacity:0.85; }
+.btn-secondary { background:#1a1a2e; }
+.meta { font-size:13px; color:var(--text-secondary); margin-top:8px; line-height:1.6; }
+.log { background:#f8f9fa; border-radius:8px; padding:12px; font-size:12px; color:var(--text-secondary); margin-top:12px; max-height:200px; overflow-y:auto; line-height:1.6; }
+.manual-box { margin-top:16px; }
+.manual-box textarea { width:100%; min-height:120px; padding:12px; border:1px solid var(--border); border-radius:8px; font-family:monospace; font-size:12px; resize:vertical; }
+.manual-box button { margin-top:10px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📤 上传价格数据</h1>
+  <p>由仪表盘把抓取到的价格写入共享数据中心</p>
+</header>
+
+<div class="container">
+  <div class="card" id="mainCard">
+    <div id="status" class="status loading">
+      <div class="spinner"></div>
+      <span>正在解析数据...</span>
+    </div>
+    <div class="meta" id="meta"></div>
+    <div class="log" id="log"></div>
+    <div id="actions" style="margin-top:16px;display:none;">
+      <a href="index.html" class="btn">返回仪表盘</a>
+    </div>
+  </div>
+
+  <div class="card" id="tokenCard" style="display:none;">
+    <h3 style="margin-bottom:12px;">🔑 首次使用：设置 GitHub Token</h3>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
+      上传数据需要 GitHub 访问令牌。令牌只保存在<strong>你的浏览器本地</strong>（localStorage），不会上传到任何服务器。
+    </p>
+    <div class="manual-box">
+      <input id="tokenInput" type="password" placeholder="粘贴 GitHub Personal Access Token (ghp_...)"
+        style="width:100%;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:14px;box-sizing:border-box;">
+      <button class="btn" onclick="saveToken()">保存并继续</button>
+      <div class="meta">Token 获取方式：GitHub → Settings → Developer settings → Personal access tokens → 勾选 repo 权限生成</div>
+    </div>
+  </div>
+
+  <div class="card" id="manualCard" style="display:none;">
+    <h3 style="margin-bottom:12px;">手动导入</h3>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">如果自动跳转失败，请把抓取脚本提示"数据已复制"的 JSON 粘贴到下方，然后点击导入。</p>
+    <div class="manual-box">
+      <textarea id="manualData" placeholder='{"pid":"...","snapshot":{"t":"...","v":[...]}}'></textarea>
+      <button class="btn" onclick="manualUpload()">导入并上传</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// GitHub 数据中心 (Contents API 读+写，写需 token + sha 乐观锁)
+// Token 不硬编码：首次使用时输入，保存在浏览器 localStorage
+let GH_TOKEN = localStorage.getItem('temu_gh_token') || '';
+const GH_OWNER = '1149654301-cloud';
+const GH_REPO = 'temu-scraper';
+const GH_PATH = 'data.json';
+const BLOB_URL = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO + '/contents/' + GH_PATH;
+
+// UTF-8 安全的 base64 编解码
+function b64Encode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
+function b64Decode(b64) {
+  const bin = atob(b64.replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+const statusEl = document.getElementById('status');
+const metaEl = document.getElementById('meta');
+const logEl = document.getElementById('log');
+const actionsEl = document.getElementById('actions');
+
+function setStatus(type, text) {
+  statusEl.className = 'status ' + type;
+  statusEl.innerHTML = type === 'loading'
+    ? '<div class="spinner"></div><span>' + text + '</span>'
+    : '<span>' + text + '</span>';
+}
+
+function log(s) {
+  logEl.innerHTML += s + '<br>';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function doUpload(pid, snapshot) {
+  setStatus('loading', '正在写入数据中心...');
+  log('运营: ' + (snapshot.operator || '未知'));
+  log('商品ID: ' + pid);
+  log('变体数: ' + (snapshot.v || []).length);
+
+  // Compress snapshot: variant names → product-level index, prices → arrays
+  const compressed = compress(snapshot);
+  log('压缩后: ' + JSON.stringify(compressed).length + ' bytes');
+
+  try {
+    await writeWithRetry(pid, compressed, snapshot);
+    setStatus('success', '✅ 上传成功！' + compressed.vn.length + ' 个变体已写入');
+    actionsEl.style.display = 'block';
+    log('完成，3秒后自动跳转回仪表盘');
+    setTimeout(() => location.href = 'index.html?t=' + Date.now(), 3000);
+  } catch (e) {
+    setStatus('error', '❌ 上传失败: ' + e.message);
+    document.getElementById('manualCard').style.display = 'block';
+    log('错误: ' + e.message);
+  }
+}
+
+// 读-合并-写：GitHub Contents API 带 sha 乐观锁，409 冲突自动重试
+async function writeWithRetry(pid, compressed, snapshot) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      log('检测到并发写入，自动重试 ' + (attempt + 1) + '/3...');
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    const gr = await fetch(BLOB_URL, { headers: { 'Authorization': 'token ' + GH_TOKEN } });
+    if (!gr.ok && gr.status !== 404) {
+      throw new Error('读取数据中心失败: HTTP ' + gr.status);
+    }
+
+    let data = { p: [] };
+    let sha = null;
+
+    if (gr.ok) {
+      const meta = await gr.json();
+      sha = meta.sha;
+      try { data = JSON.parse(b64Decode(meta.content)); } catch(e) { data = { p: [] }; }
+    }
+
+    let found = false;
+    for (const p of (data.p || [])) {
+      if (p.id === pid) {
+        // Merge variant names and original prices
+        if (compressed.vn) {
+          const existing = p.vn || [];
+          const merged = [...new Set([...compressed.vn, ...existing])];
+          // Merge vo (original prices) for new variants
+          if (!p.vo) p.vo = [];
+          const newVO = merged.map((name, i) => {
+            const oldIdx = existing.indexOf(name);
+            if (oldIdx >= 0) return (p.vo[oldIdx] !== undefined ? p.vo[oldIdx] : null);
+            const newIdx = compressed.vn.indexOf(name);
+            return newIdx >= 0 ? (compressed.vo[newIdx] || null) : null;
+          });
+          p.vn = merged;
+          p.vo = newVO;
+          // Re-index old snapshots if vn changed
+          if (merged.length !== existing.length) {
+            p.ss = (p.ss || []).map(s => reindex(s, existing, merged));
+          }
+        }
+        p.ss = p.ss || [];
+        p.ss.unshift(compressed.ss);
+        p.ss = p.ss.slice(0, 3);
+        p.lu = compressed.ss.t;
+        p.nm = snapshot.product_name || p.nm || '';
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      data.p = data.p || [];
+      data.p.push({
+        id: pid,
+        nm: snapshot.product_name || '',
+        vn: compressed.vn || [],
+        vo: compressed.vo || [],
+        cat: '',
+        lu: compressed.ss.t,
+        ss: [compressed.ss]
+      });
+    }
+
+    const payload = {
+      message: '抓取更新 ' + pid + ' @' + new Date().toISOString(),
+      content: b64Encode(JSON.stringify(data))
+    };
+    if (sha) payload.sha = sha;
+
+    const pr = await fetch(BLOB_URL, {
+      method: 'PUT',
+      headers: { 'Authorization': 'token ' + GH_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (pr.ok) return;
+    if (pr.status === 409 && attempt < 2) continue; // 并发写入冲突 → 重新读取合并
+    throw new Error('写入失败: HTTP ' + pr.status);
+  }
+}
+
+// Compress: variant names + original prices to product level, current prices to arrays
+function compress(snapshot) {
+  const variants = snapshot.v || [];
+  const vn = variants.map(v => v.n);
+  const prices = variants.map(v => v.p);
+  const originals = variants.map(v => v.o);
+  return {
+    vn: vn,
+    vo: originals,
+    ss: {
+      t: snapshot.t,
+      op: snapshot.operator || '',
+      v: prices
+    }
+  };
+}
+
+// Re-index snapshot prices when variant name list changes
+function reindex(snap, oldVN, newVN) {
+  if (!snap.v || !Array.isArray(snap.v)) return snap;
+  const lookup = {};
+  oldVN.forEach((name, i) => { lookup[name] = i; });
+  const newV = newVN.map(name => {
+    const oldIdx = lookup[name];
+    return oldIdx !== undefined ? snap.v[oldIdx] : null;
+  });
+  return { t: snap.t, op: snap.op, v: newV };
+}
+
+async function manualUpload() {
+  try {
+    const raw = document.getElementById('manualData').value.trim();
+    if (!raw) return alert('请先粘贴数据');
+    const obj = JSON.parse(raw);
+    if (!obj.pid || !obj.snapshot) throw new Error('格式不正确');
+    if (!ensureToken()) {
+      pendingObj = obj; // 保存待传数据，输入 token 后自动继续
+      return;
+    }
+    await doUpload(obj.pid, obj.snapshot);
+  } catch (e) {
+    alert('解析失败: ' + e.message);
+  }
+}
+
+// 解析 URL 参数
+const params = new URLSearchParams(location.search);
+const encoded = params.get('d');
+let pendingObj = null;
+
+function ensureToken() {
+  if (GH_TOKEN) return true;
+  document.getElementById('tokenCard').style.display = 'block';
+  setStatus('loading', '🔑 首次使用：请先设置 Token');
+  return false;
+}
+
+function saveToken() {
+  const v = document.getElementById('tokenInput').value.trim();
+  if (!v) return alert('请输入 token');
+  GH_TOKEN = v;
+  localStorage.setItem('temu_gh_token', v);
+  document.getElementById('tokenCard').style.display = 'none';
+  log('✅ Token 已保存到浏览器本地，仅本机可见');
+  processPending();
+}
+
+function processPending() {
+  if (pendingObj) {
+    const obj = pendingObj;
+    pendingObj = null;
+    metaEl.innerHTML = '运营: <b>' + (obj.snapshot.operator || '未知') + '</b><br>商品ID: <b>' + obj.pid + '</b><br>变体数: <b>' + (obj.snapshot.v || []).length + '</b>';
+    doUpload(obj.pid, obj.snapshot);
+  } else if (!encoded) {
+    setStatus('error', '❌ 未收到数据，请重新从 Temu 页面点击书签抓取');
+    document.getElementById('manualCard').style.display = 'block';
+  }
+}
+
+if (encoded) {
+  try {
+    const decoded = decodeURIComponent(escape(atob(encoded)));
+    const obj = JSON.parse(decoded);
+    if (!obj.pid || !obj.snapshot) throw new Error('数据格式不正确');
+    pendingObj = obj;
+    if (!ensureToken()) return; // 等待用户输入 token 后继续
+    processPending();
+  } catch (e) {
+    setStatus('error', '❌ 数据解析失败: ' + e.message);
+    document.getElementById('manualCard').style.display = 'block';
+    log(e.message);
+  }
+} else {
+  if (!ensureToken()) return;
+  setStatus('error', '❌ 未收到数据，请重新从 Temu 页面点击书签抓取');
+  document.getElementById('manualCard').style.display = 'block';
+}
+</script>
+
+</body>
+</html>
