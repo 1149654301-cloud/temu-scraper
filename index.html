@@ -109,6 +109,24 @@ canvas { width:100% !important; max-height:350px; }
 .bookmark-list { display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px; }
 .bookmark-btn { display:inline-block;background:var(--accent);color:#fff;padding:8px 10px;border-radius:8px;text-decoration:none;font-size:12px;font-weight:600;cursor:grab;user-select:none;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
 .bookmark-btn:hover { opacity:0.85; }
+
+/* 商品备注 */
+.product-note-input {
+  flex:1; min-width:180px; max-width:400px; padding:6px 12px; border:1px solid var(--border); border-radius:6px;
+  font-size:14px; color:var(--text); background:#fff; transition:all .2s;
+}
+.product-note-input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(232,116,0,0.1); }
+.product-note-input::placeholder { color:var(--text-secondary); opacity:.6; }
+.product-note-badge {
+  display:inline-block; margin-left:8px; padding:2px 8px; background:#fff3e6; color:var(--accent);
+  border-radius:12px; font-size:12px; font-weight:600; max-width:160px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; vertical-align:middle;
+}
+.note-toast {
+  position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1a1a2e; color:#fff;
+  padding:10px 20px; border-radius:8px; font-size:13px; z-index:99999; opacity:0; transition:opacity .3s; pointer-events:none;
+}
+.note-toast.show { opacity:1; }
 </style>
 </head>
 <body>
@@ -209,12 +227,13 @@ const SCRAPER_INLINE = "(async()=>{\n  const UPLOAD_BASE='https://1149654301-clo
 // ============== 数据加载 (从 jsonblob 读取紧凑格式并展开) ==============
 
 function expandCompact(compact) {
-  // 新格式: {id, nm, vn, vo, cat, lu, ss:[{t, op, v:[prices]}]}
+  // 新格式: {id, nm, vn, vo, cat, lu, ss:[{t, op, v:[prices]}], note}
   // 旧格式: {id, n, cn, cat, lu, ss:[{t, operator, v:[{n,p,o}]}]}
   return (compact.p || []).map(cp => ({
     product_id: cp.id,
     product_name: cp.nm || cp.n || (cp.id !== 'unknown' ? cp.id : ''),
     product_name_cn: cp.cn || '',
+    note: cp.note || '',
     category: cp.cat || '',
     last_updated: cp.lu || '',
     snapshots: (cp.ss || []).map(s => ({
@@ -366,8 +385,9 @@ function renderMainList() {
         const minPrice = validPrices.length ? Math.min(...validPrices) : null;
         const maxPrice = validPrices.length ? Math.max(...validPrices) : null;
         const isActive = currentProduct && currentProduct.product_id === p.product_id;
+        const noteTag = p.note ? `<span class="product-note-badge">${escapeHtml(p.note)}</span>` : '';
         html += `<div class="product-item ${isActive ? 'active' : ''}" onclick="selectProduct('${p.product_id}')">
-          <div class="name">${p.product_name_cn || p.product_name || p.product_id}</div>
+          <div class="name">${p.product_name_cn || p.product_name || p.product_id}${noteTag}</div>
           <div class="meta">${latest ? latest.variants.length : 0} 个变体 · ${minPrice != null ? '$'+minPrice.toFixed(2)+' ~ $'+maxPrice.toFixed(2) : '暂无价格'} · ${p.snapshots.length} 次抓取</div>
         </div>`;
       });
@@ -481,10 +501,15 @@ function renderDetail() {
   const diffMap = buildDiffMap(p);
   const changedCount = Object.keys(diffMap).length;
 
+  const noteText = escapeHtml(p.note || '').replace(/"/g, '&quot;');
+  const noteDisplay = p.note ? ` · <span style="color:var(--accent);font-weight:600">备注: ${escapeHtml(p.note)}</span>` : '';
   let html = `
     <div style="margin-bottom:16px;">
-      <h2 style="font-size:20px;">${p.product_name_cn || p.product_name || '商品 ' + p.product_id}</h2>
-      <div style="color:var(--text-secondary);font-size:13px;margin-top:4px;">ID: ${p.product_id} · ${p.category || ''} · ${p.snapshots.length} 次抓取${hasHistory ? ' · 最近: '+new Date(latest.captured_at).toLocaleString('zh-CN') : ''}</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;">
+        <h2 style="font-size:20px;margin:0;">${p.product_name_cn || p.product_name || '商品 ' + p.product_id}</h2>
+        <input type="text" class="product-note-input" id="noteInput" placeholder="填写产品备注/名称..." value="${noteText}" onchange="saveNote('${p.product_id}', this.value)">
+      </div>
+      <div style="color:var(--text-secondary);font-size:13px;margin-top:4px;">ID: ${p.product_id}${p.category ? ' · '+p.category : ''}${noteDisplay} · ${p.snapshots.length} 次抓取${hasHistory ? ' · 最近: '+new Date(latest.captured_at).toLocaleString('zh-CN') : ''}</div>
     </div>
     ${changedCount > 0 ? `<div style="margin-bottom:16px;background:#fff;border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px">
       📊 相比上次抓取：<span style="color:var(--red);font-weight:700">↑${Object.values(diffMap).filter(d=>d.diff>0).length}涨</span> <span style="color:var(--green);font-weight:700">↓${Object.values(diffMap).filter(d=>d.diff<0).length}跌</span> <span style="color:var(--text-secondary)">(${changedCount}个变体变动)</span>
@@ -658,6 +683,79 @@ function renderCards(variants, minPrice, diffMap) {
     </div>`}).join('')}</div>`;
 }
 
+// ============== 商品备注 ==============
+
+function escapeHtml(text) {
+  if (text == null) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function showToast(msg) {
+  const el = document.getElementById('noteToast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+const GH_OWNER = '1149654301-cloud';
+const GH_REPO = 'temu-scraper';
+const GH_PATH = 'data.json';
+const TOKEN_KEY = 'temu_tracker_gh_token';
+
+async function saveNote(productId, note) {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    alert('需要 GitHub Token 才能保存备注。请先抓取一次商品，在上传弹窗里输入并保存 Token；或者先打开一次 upload.html 输入 Token。');
+    return;
+  }
+
+  // 本地先更新，输入框不闪动
+  const p = products.find(x => x.product_id === productId);
+  if (p) p.note = note;
+
+  const API_URL = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_PATH}`;
+  try {
+    const getResp = await fetch(API_URL, {
+      headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + token }
+    });
+    if (!getResp.ok) throw new Error('读取仓库失败 HTTP ' + getResp.status);
+    const data = await getResp.json();
+    const sha = data.sha;
+    const content = atob(data.content.replace(/\s/g, ''));
+    const compact = JSON.parse(content || '{"p":[]}');
+    if (!compact.p || !Array.isArray(compact.p)) compact.p = [];
+
+    const cp = compact.p.find(x => x.id === productId);
+    if (cp) cp.note = note;
+
+    const newContent = btoa(unescape(encodeURIComponent(JSON.stringify(compact))));
+    const putResp = await fetch(API_URL, {
+      method: 'PUT',
+      headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: `Update note for ${productId}`, content: newContent, sha: sha })
+    });
+
+    if (!putResp.ok) {
+      const err = await putResp.json().catch(() => ({}));
+      throw new Error(err.message || '写入失败 HTTP ' + putResp.status);
+    }
+
+    // 同步刷新列表和详情中的备注显示
+    renderMainList();
+    renderDetail();
+    showToast('备注已保存');
+  } catch (e) {
+    console.error('saveNote error:', e);
+    alert('保存备注失败: ' + e.message + '\n\n请确认 Token 未过期，或重新抓取一次商品以刷新 Token。');
+  }
+}
+
 // ============== 视图切换 ==============
 
 function switchView(mode) {
@@ -798,5 +896,7 @@ initOperatorRole();
 refreshData();
 setInterval(refreshData, 30000); // auto-refresh every 30s
 </script>
+
+<div id="noteToast" class="note-toast">备注已保存</div>
 </body>
 </html>
