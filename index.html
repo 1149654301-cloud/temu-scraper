@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Temu 商品价格追踪器 - 多人协作版</title>
+<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #f5f6fa; --card: #fff; --text: #2d3436; --text-secondary: #636e72;
+  --border: #e8ecf1; --accent: #e87400; --accent-light: #fff3e6;
+  --green: #00b894; --red: #e17055; --shadow: 0 2px 12px rgba(0,0,0,0.06);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+header { background:linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #e87400 100%); color:#fff; padding:28px 32px; }
+header h1 { font-size:24px; font-weight:700; }
+header p { opacity:0.7; margin-top:6px; font-size:14px; }
+.container { max-width:1400px; margin:0 auto; padding:24px; }
+.badge { display:inline-block; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600; }
+.badge-live { background:#d4fceb; color:#007a50; }
+.badge-updating { background:#fff3cd; color:#856404; }
+.grid-2 { display:grid; grid-template-columns:250px 1fr; gap:24px; }
+.grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+.card { background:var(--card); border-radius:12px; padding:20px; box-shadow:var(--shadow); border:1px solid var(--border); }
+.product-item { padding:14px 40px 14px 16px; border-radius:10px; cursor:pointer; margin-bottom:8px; transition:all 0.2s; border:2px solid transparent; background:var(--card); position:relative; }
+.delete-btn { position:absolute; top:50%; right:8px; transform:translateY(-50%); width:26px;height:26px;border-radius:50%;border:none;background:transparent;color:#bbb;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;transition:all 0.2s;z-index:1;line-height:1; }
+.delete-btn:hover { background:#e17055;color:#fff; }
+.product-item:hover { border-color:var(--accent); }
+.product-item.active { border-color:var(--accent); background:var(--accent-light); }
+.product-item .name { font-weight:600; font-size:14px; }
+.product-item .meta { font-size:12px; color:var(--text-secondary); margin-top:4px; }
+.stat-value { font-size:28px; font-weight:700; }
+.stat-label { font-size:13px; color:var(--text-secondary); margin-top:2px; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th,td { padding:10px 14px; text-align:left; border-bottom:1px solid var(--border); }
+th { background:#f8f9fa; font-weight:600; font-size:12px; color:var(--text-secondary); text-transform:uppercase; }
+.price { font-weight:700; font-variant-numeric:tabular-nums; }
+canvas { width:100% !important; max-height:350px; }
+.empty-state { text-align:center; padding:48px; color:var(--text-secondary); }
+.empty-state .icon { font-size:48px; margin-bottom:12px; }
+.section-title { font-size:18px; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
+.info-box { background:#f0f7ff; border:1px solid #b8daff; border-radius:10px; padding:16px 20px; margin-bottom:20px; font-size:13px; line-height:1.8; }
+.info-box code { background:#dce9f5; padding:2px 6px; border-radius:4px; font-size:12px; }
+.scrape-section { background:linear-gradient(135deg, #fff9f0, #fff3e6); border:2px dashed var(--accent); border-radius:12px; padding:24px; margin-bottom:20px; }
+.scrape-section h3 { font-size:16px; margin-bottom:12px; color:var(--accent); }
+.scrape-section .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.step { background:#fff; border-radius:8px; padding:16px; text-align:center; }
+.step .num { width:28px; height:28px; background:var(--accent); color:#fff; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; margin-bottom:8px; }
+.step .title { font-weight:600; font-size:13px; margin-bottom:4px; }
+.step .desc { font-size:12px; color:var(--text-secondary); }
+.copy-btn { background:var(--accent); color:#fff; border:none; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:12px; }
+.copy-btn:hover { opacity:0.85; }
+.download-btn { display:inline-block; background:#1a1a2e; color:#fff; padding:10px 20px; border-radius:8px; text-decoration:none; font-size:14px; font-weight:600; }
+.download-btn:hover { opacity:0.85; }
+
+/* Matrix heatmap styles */
+.matrix-wrap { overflow-x:auto; }
+.matrix-table { border-collapse:collapse; font-size:13px; min-width:100%; }
+.matrix-table th,.matrix-table td { padding:10px 12px; text-align:center; border:1px solid var(--border); }
+.matrix-table th:first-child,.matrix-table td:first-child { text-align:left; position:sticky; left:0; background:var(--card); z-index:1; font-weight:600; }
+.matrix-table thead th { background:#f8f9fa; font-weight:600; position:sticky; top:0; z-index:2; }
+.matrix-best { border:2px solid #00b894 !important; font-weight:700; }
+.matrix-worst { border:2px solid #e17055 !important; }
+.legend { display:flex; gap:16px; align-items:center; font-size:12px; color:var(--text-secondary); margin-bottom:12px; }
+.legend-bar { width:120px; height:10px; border-radius:5px; background:linear-gradient(to right, #00b894, #ffeaa7, #e17055); }
+.variant-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; }
+.v-card { background:var(--card); border:2px solid var(--border); border-radius:10px; padding:14px; text-align:center; transition:all 0.2s; }
+.v-card:hover { border-color:var(--accent); transform:translateY(-2px); }
+.v-card.best { border-color:var(--green); background:#f0fdf7; }
+.v-card .v-name { font-size:13px; color:var(--text-secondary); margin-bottom:6px; }
+.v-card .v-price { font-size:20px; font-weight:700; }
+.v-card .v-original { font-size:12px; color:var(--text-secondary); text-decoration:line-through; margin-top:2px; }
+.toggle-btns { display:flex; gap:8px; margin-bottom:16px; }
+.toggle-btn { padding:6px 16px; border:1px solid var(--border); border-radius:6px; background:var(--card); cursor:pointer; font-size:13px; }
+.toggle-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.refresh-bar { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+.refresh-bar .last-update { font-size:12px; color:var(--text-secondary); }
+.operator-item { padding:14px 16px; border-radius:10px; cursor:pointer; margin-bottom:8px; transition:all 0.2s; border:2px solid transparent; background:var(--card); }
+.operator-item:hover { border-color:#0984e3; background:#f0f7ff; }
+.operator-item .op-name { font-weight:700; font-size:15px; }
+.operator-item .op-stats { font-size:12px; color:var(--text-secondary); margin-top:4px; display:flex; gap:12px; flex-wrap:wrap; }
+.op-avatar { width:32px; height:32px; border-radius:50%; background:linear-gradient(135deg,#0984e3,#6c5ce7); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; margin-right:8px; vertical-align:middle; }
+.breadcrumb { font-size:13px; color:var(--accent); cursor:pointer; margin-bottom:12px; display:inline-block; transition:all 0.2s; }
+.breadcrumb:hover { text-decoration:underline; opacity:0.8; }
+@media (max-width:900px) { .grid-2{grid-template-columns:1fr;} .grid-3{grid-template-columns:1fr;} .scrape-section .steps{grid-template-columns:1fr;} }
+
+/* 角色选择模态框 */
+.modal-overlay { position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center; }
+.modal-box { background:#fff;border-radius:16px;padding:32px;max-width:520px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3); }
+.modal-box h2 { font-size:20px;margin-bottom:6px; }
+.modal-box .subtitle { font-size:13px;color:var(--text-secondary);margin-bottom:20px; }
+.operator-select-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:10px; }
+.op-select-card { padding:12px 8px;border:2px solid var(--border);border-radius:10px;text-align:center;cursor:pointer;transition:all .2s;font-size:14px;font-weight:600;background:var(--card); }
+.op-select-card:hover { border-color:var(--accent);background:#fff9f0;transform:translateY(-2px); }
+.op-select-card .avatar { width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#0984e3,#6c5ce7);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;margin-bottom:6px; }
+.op-select-card:nth-child(3n+1) .avatar { background:linear-gradient(135deg,#e17055,#d63031); }
+.op-select-card:nth-child(3n+2) .avatar { background:linear-gradient(135deg,#00b894,#00cec9); }
+.op-select-card:nth-child(3n+3) .avatar { background:linear-gradient(135deg,#0984e3,#6c5ce7); }
+.op-select-card.test .avatar { background:linear-gradient(135deg,#636e72,#2d3436); }
+
+/* 运营徽章 */
+.operator-badge { display:inline-flex;align-items:center;gap:6px;background:#f0f7ff;border:1px solid #b8daff;border-radius:20px;padding:4px 14px 4px 6px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s; }
+.operator-badge:hover { background:#dce9f5; }
+.operator-badge .mini-avatar { width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#0984e3,#6c5ce7);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:11px; }
+.operator-badge .switch-hint { font-size:11px;color:var(--text-secondary);font-weight:400; }
+
+/* 书签按钮组 */
+.bookmark-list { display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px; }
+.bookmark-btn { display:inline-block;background:var(--accent);color:#fff;padding:8px 10px;border-radius:8px;text-decoration:none;font-size:12px;font-weight:600;cursor:grab;user-select:none;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.bookmark-btn:hover { opacity:0.85; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Temu 商品价格追踪器 <span class="badge badge-live">多人协作</span></h1>
+  <p>所有成员可自行抓取商品价格，数据实时共享</p>
+</header>
+
+<div class="container">
+  <!-- 抓取入口 -->
+  <div class="scrape-section" id="scrapeSection" style="display:none">
+    <h3>📥 抓取新商品 — <span id="scrapeOpName" style="color:#e87400;">未选择运营</span></h3>
+    <div class="steps">
+      <div class="step">
+        <div class="num">1</div>
+        <div class="title">拖拽你的专属书签</div>
+        <div class="desc">找到你的名字，把按钮拖到浏览器书签栏</div>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <div class="title">打开商品页 & 点击书签</div>
+        <div class="desc">在 Temu 商品页面点击你的专属书签</div>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <div class="title">自动完成</div>
+        <div class="desc">自动抓取所有变体价格并上传，刷新仪表盘即可</div>
+      </div>
+    </div>
+    <div style="margin-top:16px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🔗 各运营专属书签（拖拽你的那个到书签栏）：</div>
+      <div class="bookmark-list" id="bookmarkList"></div>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--text-secondary);background:#fff;border-radius:8px;padding:12px;">
+      💡 书签已内置运营名，点击后无需再输入名字。如未看到书签栏，按 <code>Ctrl+Shift+B</code> 显示。
+    </div>
+  </div>
+
+  <!-- 刷新栏 -->
+  <div class="refresh-bar">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span class="last-update" id="lastUpdate">加载中...</span>
+      <span class="operator-badge" id="operatorBadge" onclick="showOperatorSelector()" style="display:none;">
+        <span class="mini-avatar" id="badgeAvatar"></span>
+        <span id="badgeName"></span>
+        <span class="switch-hint">▾ 切换</span>
+      </span>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="toggle-btn active" onclick="toggleScrape()" id="scrapeToggle">📥 抓取新商品</button>
+      <button class="toggle-btn" onclick="refreshData()">🔄 刷新数据</button>
+    </div>
+  </div>
+
+  <!-- 运营选择模态框 -->
+  <div class="modal-overlay" id="operatorModal" style="display:none;">
+    <div class="modal-box">
+      <h2>👤 选择你的运营身份</h2>
+      <p class="subtitle">选择后将以此身份抓取商品价格，数据不会混淆</p>
+      <div class="operator-select-grid" id="operatorSelectGrid"></div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- 左侧：产品列表 -->
+    <div>
+      <div class="card">
+        <div class="section-title" id="listTitle">👥 运营列表 <span style="font-size:12px;color:var(--text-secondary);" id="productCount"></span></div>
+        <div id="productList"></div>
+      </div>
+    </div>
+
+    <!-- 右侧：详情 -->
+    <div>
+      <div id="detailPanel">
+        <div class="card empty-state">
+          <div class="icon">📊</div>
+          <p>选择左侧商品查看详情</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============== 全局状态 ==============
+let products = [];
+let currentProduct = null;
+let currentOperator = null; // null = 运营列表; string = 某运营的商品列表
+let viewMode = 'matrix'; // matrix | list
+
+// GitHub 云端数据源
+// 通过 GitHub Pages 访问时读同域 data.json；本地打开时读 raw 直链
+const isFileProtocol = location.protocol === 'file:';
+const CLOUD_URL = isFileProtocol
+  ? 'https://raw.githubusercontent.com/1149654301-cloud/temu-scraper/main/data.json'
+  : './data.json';
+
+// 兼容本地脚本单价格格式：如果 vn 是数字而非数组，包装成单元素数组
+function normalizeCompact(compact) {
+  if (!compact || !compact.p) return compact;
+  for (const cp of compact.p) {
+    if (typeof cp.vn === 'number') {
+      cp.vn = ['Default'];
+      cp.vo = [null];
+    }
+    if (Array.isArray(cp.ss)) {
+      for (const s of cp.ss) {
+        if (typeof s.v === 'number') {
+          s.v = [s.v];
+          s.o = [s.op !== undefined ? s.op : null];
+          delete s.op;
+        }
+      }
+    }
+  }
+  return compact;
+}
+const SCRAPER_INLINE = '(async()=>{const t=location.href.match(/g-(\\d+)\\.html/),e=t?t[1]:"unknown";let n=e;const o=t=>new Promise(e=>setTimeout(e,t));let i="undefined"!=typeof OPERATOR_NAME?OPERATOR_NAME:null;const s=document.createElement("div");if(s.id="temu_scraper_overlay",document.getElementById("temu_scraper_overlay"))return;s.style.cssText="position:fixed;top:10px;right:10px;width:380px;background:#1a1a2e;color:#fff;border-radius:12px;padding:16px;z-index:999999;font-family:system-ui,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,.4);font-size:14px;line-height:1.5",s.innerHTML=\'\\n    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">\\n      <span id="ts_title" style="font-size:16px;font-weight:700">🔍 Temu 价格抓取</span>\\n      <span id="ts_close" style="cursor:pointer;opacity:.5;font-size:18px" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.5">✕</span>\\n    </div>\\n    <div id="ts_body"></div>\\n    <div id="ts_progress" style="display:none;">\\n      <div id="ts_msg" style="color:#aaa;margin-bottom:8px;margin-top:8px"></div>\\n      <div style="height:6px;background:#333;border-radius:3px;overflow:hidden;margin-bottom:8px">\\n        <div id="ts_bar" style="height:100%;width:0;background:linear-gradient(90deg,#4CAF50,#8BC34A);transition:width .3s;border-radius:3px"></div>\\n      </div>\\n      <div id="ts_log" style="max-height:150px;overflow-y:auto;font-size:12px;color:#888;line-height:1.6;word-break:break-all"></div>\\n    </div>\\n  \',document.body.appendChild(s),document.getElementById("ts_close").onclick=()=>s.remove();const a=document.getElementById("ts_body"),r=document.getElementById("ts_progress"),l=t=>{const e=document.getElementById("ts_msg");e&&(e.textContent=t)},d=t=>{const e=document.getElementById("ts_bar");e&&(e.style.width=t+"%")},p=t=>{const e=document.getElementById("ts_log");e&&(e.innerHTML+=t+"<br>",e.scrollTop=e.scrollHeight)};i||(a.innerHTML=`\\n      <div style="margin-bottom:14px;">\\n        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:6px;">商品ID</label>\\n        <div style="padding:8px 12px;background:#2d2d44;border-radius:6px;font-size:13px;color:#8BC34A;font-family:monospace">${e}</div>\\n      </div>\\n      <div style="margin-bottom:14px;">\\n        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:6px;">请输入您的名字（运营名）</label>\\n        <input id="ts_operator" type="text" placeholder="例如：张三" style="width:100%;padding:10px 12px;background:#2d2d44;border:1px solid #4a4a6a;border-radius:6px;color:#fff;font-size:14px;outline:none;box-sizing:border-box" autofocus>\\n      </div>\\n      <button id="ts_start" style="width:100%;padding:10px;background:linear-gradient(135deg,#e87400,#ff8c00);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer">🚀 开始抓取</button>\\n      <div style="text-align:center;margin-top:8px;font-size:11px;color:#666">抓取过程约需 30~120 秒</div>\\n    `,i=await new Promise(t=>{document.getElementById("ts_start").onclick=()=>{const e=document.getElementById("ts_operator").value.trim();e?t(e):alert("请输入您的名字")},document.getElementById("ts_operator").onkeydown=e=>{if("Enter"===e.key){const e=document.getElementById("ts_operator").value.trim();if(!e)return void alert("请输入您的名字");t(e)}}})),a.style.display="none",r.style.display="block",document.getElementById("ts_title").textContent="🔍 "+i+" 正在抓取...",l("初始化中...");try{l("检测规格组...");const t=document.querySelectorAll(\'div[role="radio"]\');if(!t.length)return void l("❌ 未找到规格选项，请确认页面已完全加载");const s=new Map;t.forEach(t=>{const e=t.parentElement?.parentElement;e&&(s.has(e)||s.set(e,[]),s.get(e).push(t))});const a=["Color","Size","Quantity","Style","Pattern","Material","Type","Version","Model"],r=[];let c=0;s.forEach((t,e)=>{const n=e.textContent||"";let o="Spec-"+ ++c;for(const t of a)if(n.includes(t)){o=t;break}r.push({name:o,options:t.map(t=>t.getAttribute("aria-label"))})}),p("规格组: "+r.map(t=>t.name+"("+t.options.length+")").join(", "));const m=[];!function t(e,n){if(e!==r.length)for(const o of r[e].options)n.push(o),t(e+1,n),n.pop();else m.push([...n])}(0,[]),p("共 "+m.length+" 个组合"),l("开始抓取 "+m.length+" 个组合..."),d(0);const g=[];for(let t=0;t<m.length;t++){const e=m[t].join(" / ");for(const e of m[t]){const t=document.querySelector(\'div[aria-label="\'+e.replace(/"/g,\'\\\\"\')+\'"]\');t&&t.click(),await o(600)}await o(2e3);const n=[...document.querySelectorAll("._14At0Pe5")].map(t=>t.textContent.trim()).filter(t=>t.startsWith("$"));let i=null,s=null;n.length>=2?(s=parseFloat(n[0].replace(/[$,]/g,"")),i=parseFloat(n[1].replace(/[$,]/g,""))):1===n.length&&(i=parseFloat(n[0].replace(/[$,]/g,""))),null!==i&&g.push({n:e,p:i,o:s}),d(Math.round((t+1)/m.length*85)),t%5!=0&&t!==m.length-1||p("["+(t+1)+"/"+m.length+"] "+e+" → $"+i)}p("抓取完成，准备上传..."),l("正在打开仪表盘上传数据..."),d(90);const u={t:(new Date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}),operator:i,product_name:n,v:g.map(t=>({n:t.n,p:t.p,o:t.o}))},y=btoa(unescape(encodeURIComponent(JSON.stringify({pid:e,snapshot:u}))));if(y.length>6e3){l("数据量较大，请复制后手动粘贴");const t=JSON.stringify({pid:e,snapshot:u});return void navigator.clipboard.writeText(t).then(()=>{alert(\'抓取完成，但数据量过大无法自动上传。数据已复制到剪贴板，请打开仪表盘点击"手动导入"粘贴。\')})}const h="https://e73a83c543ac4777a1c3eadf3093eaa4.bj8.agentos-app.net/upload.html?d="+encodeURIComponent(y);window.open(h,"_blank"),l("✅ 抓取完成"),d(100),p("已打开上传页面，由仪表盘代为写入数据中心")}catch(t){l("❌ "+t.message),p(t.message)}})();';
+
+// ============== 数据加载 (从 jsonblob 读取紧凑格式并展开) ==============
+
+function expandCompact(compact) {
+  // 新格式: {id, nm, vn, vo, cat, lu, ss:[{t, op, v:[prices]}]}
+  // 旧格式: {id, n, cn, cat, lu, ss:[{t, operator, v:[{n,p,o}]}]}
+  return (compact.p || []).map(cp => ({
+    product_id: cp.id,
+    product_name: cp.nm || cp.n || (cp.id !== 'unknown' ? cp.id : ''),
+    product_name_cn: cp.cn || '',
+    category: cp.cat || '',
+    last_updated: cp.lu || '',
+    snapshots: (cp.ss || []).map(s => ({
+      captured_at: s.t,
+      operator: s.op !== undefined ? s.op : (s.operator || ''),
+      // 新格式: v is price array, o from product-level vo
+      // 旧格式: v is array of {n, p, o} objects
+      variants: Array.isArray(s.v) && s.v.length > 0 && s.v[0] !== null && typeof s.v[0] === 'object'
+        ? s.v.map(v => ({ variant_name: v.n, current_price: v.p, original_price: v.o }))
+        : (cp.vn || []).map((name, i) => ({
+            variant_name: name,
+            current_price: (s.v || [])[i],
+            original_price: (s.o || cp.vo || [])[i]
+          }))
+    }))
+  }));
+}
+
+const CACHE_KEY = 'temu_tracker_cache';
+const CACHE_TS_KEY = 'temu_tracker_ts';
+const MAX_RETRIES = 3;
+
+function showError(badge, msg) {
+  badge.innerHTML = '<span style="color:var(--orange);font-weight:700">⚠️ ' + msg + ' — 点击刷新重试</span>';
+}
+
+function applyData(compact, badge, silent) {
+  products = expandCompact(compact);
+  currentProduct = products.find(p => p.product_id === (currentProduct && currentProduct.product_id)) || null;
+  renderMainList();
+  if (currentProduct) renderDetail();
+  const ops = buildOperatorGroups();
+  const now = new Date();
+  badge.innerHTML = (silent ? '🔄 ' : '') + '最后更新: ' + now.toLocaleTimeString('zh-CN') + ' | 共 ' + ops.length + ' 位运营 · ' + products.length + ' 个商品';
+  // 保存缓存
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(compact)); localStorage.setItem(CACHE_TS_KEY, now.toISOString()); } catch(e) {}
+}
+
+async function refreshData() {
+  const badge = document.getElementById('lastUpdate');
+  badge.innerHTML = '<span class="badge badge-updating">加载中...</span>';
+
+  // 1. 优先从 localStorage 加载（毫秒级，永不出错）
+  const cached = localStorage.getItem(CACHE_KEY);
+  const cachedTs = localStorage.getItem(CACHE_TS_KEY);
+  let cacheUsed = false;
+  if (cached) {
+    try {
+      const compact = JSON.parse(cached);
+      if (compact && compact.p) {
+        applyData(compact, badge, true);
+        cacheUsed = true;
+      }
+    } catch(e) {}
+  }
+
+  // 2. 从 GitHub 云端拉取（raw 直链，无需认证，最多重试 3 次，递增间隔）
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) {
+        badge.innerHTML = '<span class="badge badge-updating">重试中 (' + (attempt + 1) + '/3)...</span>';
+        await new Promise(r => setTimeout(r, 1500 * attempt));
+      }
+      const resp = await fetch(CLOUD_URL, { signal: AbortSignal.timeout(10000) });
+      if (resp.ok) {
+        let compact = await resp.json();
+        compact = normalizeCompact(compact);
+        if (compact && compact.p) {
+          applyData(compact, badge, false);
+          return;
+        }
+      }
+      lastErr = 'HTTP ' + resp.status;
+    } catch(e) {
+      lastErr = e.message;
+    }
+  }
+
+  // 3. 全失败：有缓存继续用，没缓存提示可操作
+  if (cacheUsed) {
+    const ts = cachedTs ? new Date(cachedTs).toLocaleString('zh-CN') : '未知';
+    showError(badge, '云端数据暂不可用，显示本地数据 (' + ts + ')');
+  } else {
+    badge.innerHTML = '<span style="color:var(--orange);font-weight:700">⚠️ 网络不稳定 (重试3次失败: ' + lastErr + ') — </span><a href="javascript:refreshData()" style="color:var(--accent);font-weight:700;text-decoration:underline">点击重试</a>';
+  }
+}
+
+// ============== 层级列表：运营 → 商品 ==============
+
+function buildOperatorGroups() {
+  const ops = new Map();
+  // 初始化所有运营（包括"测试"，即使没有数据也显示）
+  OPERATOR_NAMES.forEach(name => {
+    ops.set(name, { name, productIds: new Map(), snapCount: 0, lastActive: '' });
+  });
+  ops.set('测试', { name: '测试', productIds: new Map(), snapCount: 0, lastActive: '' });
+  // 合并实际数据
+  products.forEach(p => {
+    (p.snapshots || []).forEach(s => {
+      let name = s.operator || '';
+      if (!name) name = '测试';
+      // 如果运营名不在列表中，也加入
+      if (!ops.has(name)) ops.set(name, { name, productIds: new Map(), snapCount: 0, lastActive: '' });
+      const o = ops.get(name);
+      if (!o.productIds.has(p.product_id)) {
+        o.productIds.set(p.product_id, p);
+      }
+      o.snapCount++;
+      if (!o.lastActive || s.captured_at > o.lastActive) o.lastActive = s.captured_at;
+    });
+  });
+  // 按名字排序：固定列表在前，测试在最后
+  const list = [...ops.values()];
+  const fixed = list.filter(o => OPERATOR_NAMES.includes(o.name));
+  const extra = list.filter(o => !OPERATOR_NAMES.includes(o.name));
+  return [...fixed, ...extra];
+}
+
+function renderMainList() {
+  const container = document.getElementById('productList');
+  const title = document.getElementById('listTitle');
+  const count = document.getElementById('productCount');
+
+  if (!products.length) {
+    title.innerHTML = '📦 商品列表 <span style="font-size:12px;color:var(--text-secondary);"></span>';
+    container.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>还没有商品数据<br>点击上方"抓取新商品"开始</p></div>';
+    return;
+  }
+
+  if (currentOperator) {
+    // ===== 层级2：某个运营的商品列表 =====
+    title.innerHTML = '📦 商品列表 <span style="font-size:12px;color:var(--text-secondary);" id="productCount"></span>';
+    const ops = buildOperatorGroups();
+    const op = ops.find(o => o.name === currentOperator);
+    const opProducts = op ? [...op.productIds.values()] : [];
+    document.getElementById('productCount').textContent = `共 ${opProducts.length} 个`;
+
+    let html = `<span class="breadcrumb" onclick="goBackToOperators()">← 返回运营列表</span>
+      <div style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--text-secondary);">
+        <span class="op-avatar" style="width:28px;height:28px;font-size:13px">${currentOperator[0]}</span>
+        ${currentOperator} 的商品
+      </div>`;
+    if (!opProducts.length) {
+      html += '<div class="empty-state" style="padding:24px"><p>该运营还没有商品</p></div>';
+    } else {
+      opProducts.forEach(p => {
+        const latest = p.snapshots && p.snapshots.length ? p.snapshots[0] : null;
+        const validPrices = latest ? latest.variants.map(v => v.current_price).filter(x => x != null && isFinite(x)) : [];
+        const minPrice = validPrices.length ? Math.min(...validPrices) : null;
+        const maxPrice = validPrices.length ? Math.max(...validPrices) : null;
+        const isActive = currentProduct && currentProduct.product_id === p.product_id;
+        html += `<div class="product-item ${isActive ? 'active' : ''}" onclick="selectProduct('${p.product_id}')">
+          <button class="delete-btn" onclick="deleteProduct('${p.product_id}', event)" title="删除此商品">✕</button>
+          <div class="name">${p.product_name_cn || p.product_name || p.product_id}</div>
+          <div class="meta">${latest ? latest.variants.length : 0} 个变体 · ${minPrice != null ? '$'+minPrice.toFixed(2)+' ~ $'+maxPrice.toFixed(2) : '暂无价格'} · ${p.snapshots.length} 次抓取</div>
+        </div>`;
+      });
+    }
+    container.innerHTML = html;
+  } else {
+    // ===== 层级1：运营列表 =====
+    title.innerHTML = '👥 运营列表 <span style="font-size:12px;color:var(--text-secondary);" id="productCount"></span>';
+    const ops = buildOperatorGroups();
+    document.getElementById('productCount').textContent = `共 ${ops.length} 位`;
+
+    if (!ops.length) {
+      container.innerHTML = '<div class="empty-state" style="padding:24px"><p>暂无运营数据</p></div>';
+      return;
+    }
+
+    const avatarColors = ['#0984e3,#6c5ce7','#e17055,#d63031','#00b894,#00cec9','#fdcb6e,#e87400','#fd79a8,#e84393','#6c5ce7,#a29bfe','#636e72,#2d3436','#00cec9,#81ecec'];
+    container.innerHTML = ops.map((op, i) => {
+      const initials = op.name[0].toUpperCase();
+      const color = avatarColors[i % avatarColors.length];
+      const productCount = op.productIds.size;
+      const lastTime = op.lastActive ? op.lastActive.replace(' ', '<br>') : '从未';
+      return `<div class="operator-item" onclick="drillIntoOperator('${op.name.replace(/'/g, "\\'")}')">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <span class="op-avatar" style="background:linear-gradient(135deg,${color})">${initials}</span>
+            <span class="op-name">${op.name}</span>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:18px;font-weight:700;color:var(--accent)">${productCount}</div>
+            <div style="font-size:11px;color:var(--text-secondary)">商品</div>
+          </div>
+        </div>
+        <div class="op-stats">
+          <span>🔄 ${op.snapCount} 次抓取</span>
+          <span>🕐 ${lastTime}</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+}
+
+function drillIntoOperator(name) {
+  currentOperator = name;
+  currentProduct = null;
+  document.getElementById('detailPanel').innerHTML = '<div class="card empty-state"><div class="icon">📊</div><p>选择商品查看详情</p></div>';
+  renderMainList();
+}
+
+function goBackToOperators() {
+  currentOperator = null;
+  currentProduct = null;
+  document.getElementById('detailPanel').innerHTML = '<div class="card empty-state"><div class="icon">📊</div><p>选择左侧运营 → 商品查看详情</p></div>';
+  renderMainList();
+}
+
+function selectProduct(id) {
+  currentProduct = products.find(p => p.product_id === id);
+  renderMainList();
+  renderDetail();
+}
+
+async function deleteProduct(productId, event) {
+  // 阻止冒泡，避免触发选择商品
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+
+  const product = products.find(p => p.product_id === productId);
+  if (!product) return;
+
+  const displayName = product.product_name_cn || product.product_name || productId;
+  if (!confirm('确认删除商品 "' + displayName + '"？\n\n该操作将从列表和云端同步删除，不可撤销。')) return;
+
+  // 获取 compact 数据（优先本地缓存，fallback 云端）
+  let compact = null;
+  const cached = localStorage.getItem(CACHE_KEY);
+  if (cached) {
+    try { compact = JSON.parse(cached); } catch(e) {}
+  }
+  if (!compact || !compact.p) {
+    try {
+      const resp = await fetch(CLOUD_URL);
+      if (resp.ok) {
+        compact = await resp.json();
+        compact = normalizeCompact(compact);
+      }
+    } catch(e) {}
+  }
+  if (!compact || !compact.p) {
+    alert('无法获取数据源，请刷新后重试');
+    return;
+  }
+
+  // 移除目标商品
+  compact.p = compact.p.filter(cp => cp.id !== productId);
+
+  // 同步到 localStorage
+  localStorage.setItem(CACHE_KEY, JSON.stringify(compact));
+
+  // 注：浏览器端无法安全写入 GitHub，如需彻底删除请从 products.json 移除该商品后重新抓取
+
+  // 更新本地状态
+  products = products.filter(p => p.product_id !== productId);
+  if (currentProduct && currentProduct.product_id === productId) {
+    currentProduct = null;
+    document.getElementById('detailPanel').innerHTML = '<div class="card empty-state"><div class="icon">📊</div><p>选择商品查看详情</p></div>';
+  }
+
+  renderMainList();
+}
+
+// ============== 价格变动对比 ==============
+
+function buildDiffMap(product) {
+  if (!product.snapshots || product.snapshots.length < 2) return {};
+  const latest = product.snapshots[0];
+  const prev = product.snapshots[1];
+  const diffMap = {};
+  const prevMap = {};
+  prev.variants.forEach(v => { prevMap[v.variant_name] = v.current_price; });
+  latest.variants.forEach(v => {
+    const prevPrice = prevMap[v.variant_name];
+    const currPrice = v.current_price;
+    if (prevPrice != null && currPrice != null && prevPrice !== currPrice) {
+      const diff = currPrice - prevPrice;
+      diffMap[v.variant_name] = {
+        prev: prevPrice,
+        curr: currPrice,
+        diff: diff,
+        pct: (diff / prevPrice * 100).toFixed(1)
+      };
+    }
+  });
+  return diffMap;
+}
+
+// ============== 详情面板 ==============
+
+function renderDetail() {
+  if (!currentProduct) return;
+  const p = currentProduct;
+  const latest = p.snapshots && p.snapshots.length ? p.snapshots[0] : null;
+  const variants = latest ? latest.variants : [];
+  if (!variants.length) {
+    document.getElementById('detailPanel').innerHTML = '<div class="card empty-state"><p>暂无变体数据</p></div>';
+    return;
+  }
+
+  const prices = variants.map(v => v.current_price).filter(x => x != null && isFinite(x));
+  const minPrice = prices.length ? Math.min(...prices) : null;
+  const maxPrice = prices.length ? Math.max(...prices) : null;
+  const spread = maxPrice && minPrice ? (maxPrice - minPrice).toFixed(2) : null;
+
+  // Parse spec groups from variant names
+  const specGroups = parseSpecGroups(variants);
+  const isMultiSpec = specGroups.length >= 2;
+
+  // History data for charts and diff
+  const hasHistory = p.snapshots && p.snapshots.length > 1;
+  const diffMap = buildDiffMap(p);
+  const changedCount = Object.keys(diffMap).length;
+
+  let html = `
+    <div style="margin-bottom:16px;">
+      <h2 style="font-size:20px;">${p.product_name_cn || p.product_name || '商品 ' + p.product_id}</h2>
+      <div style="color:var(--text-secondary);font-size:13px;margin-top:4px;">ID: ${p.product_id} · ${p.category || ''} · ${p.snapshots.length} 次抓取${hasHistory ? ' · 最近: '+new Date(latest.captured_at).toLocaleString('zh-CN') : ''}</div>
+    </div>
+    ${changedCount > 0 ? `<div style="margin-bottom:16px;background:#fff;border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px">
+      📊 相比上次抓取：<span style="color:var(--red);font-weight:700">↑${Object.values(diffMap).filter(d=>d.diff>0).length}涨</span> <span style="color:var(--green);font-weight:700">↓${Object.values(diffMap).filter(d=>d.diff<0).length}跌</span> <span style="color:var(--text-secondary)">(${changedCount}个变体变动)</span>
+    </div>` : (hasHistory ? '<div style="margin-bottom:16px;font-size:13px;color:var(--green);background:#f0fdf7;border-radius:8px;padding:10px 14px">所有变体价格与上次抓取持平</div>' : '')}
+
+    <!-- 统计卡片 -->
+    <div class="grid-3" style="margin-bottom:20px;">
+      <div class="card"><div class="stat-value">${variants.length}</div><div class="stat-label">变体数量</div></div>
+      <div class="card"><div class="stat-value">$${minPrice != null ? minPrice.toFixed(2) : '-'}</div><div class="stat-label">最低价</div></div>
+      <div class="card"><div class="stat-value">$${maxPrice != null ? maxPrice.toFixed(2) : '-'}</div><div class="stat-label">最高价</div></div>
+    </div>`;
+
+  if (spread && minPrice > 0) {
+    html += `<div class="grid-3" style="margin-bottom:20px;">
+      <div class="card"><div class="stat-value">$${spread}</div><div class="stat-label">价差</div></div>
+      <div class="card"><div class="stat-value">${(parseFloat(spread)/minPrice*100).toFixed(1)}%</div><div class="stat-label">价差比例</div></div>
+      ${latest.review_count ? `<div class="card"><div class="stat-value">${latest.review_count}</div><div class="stat-label">评论数</div></div>` : '<div class="card"><div class="stat-value">-</div><div class="stat-label">评论数</div></div>'}
+    </div>`;
+  }
+
+  // 变体价格表
+  if (isMultiSpec) {
+    html += `
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3>变体价格矩阵</h3>
+          <div class="toggle-btns">
+            <button class="toggle-btn ${viewMode==='matrix'?'active':''}" onclick="switchView('matrix')">矩阵热力图</button>
+            <button class="toggle-btn ${viewMode==='list'?'active':''}" onclick="switchView('list')">列表</button>
+          </div>
+        </div>
+        ${viewMode === 'matrix' ? renderMatrix(variants, specGroups, minPrice, maxPrice, diffMap) : renderList(variants, minPrice, maxPrice, diffMap)}
+      </div>`;
+  } else {
+    html += `
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3>变体价格</h3>
+          <div class="toggle-btns">
+            <button class="toggle-btn ${viewMode==='card'?'active':''}" onclick="switchView('card')">卡片</button>
+            <button class="toggle-btn ${viewMode==='list'?'active':''}" onclick="switchView('list')">列表</button>
+          </div>
+        </div>
+        ${viewMode === 'card' ? renderCards(variants, minPrice, diffMap) : renderList(variants, minPrice, maxPrice, diffMap)}
+      </div>`;
+  }
+
+  // 价格走势图
+  if (hasHistory) {
+    html += `<div class="card"><h3 style="margin-bottom:16px;">价格走势</h3><canvas id="priceChart"></canvas></div>`;
+  }
+
+  document.getElementById('detailPanel').innerHTML = html;
+
+  if (hasHistory) {
+    setTimeout(() => drawPriceChart(p), 200);
+  }
+}
+
+// ============== 规格解析 ==============
+
+function parseSpecGroups(variants) {
+  if (!variants.length) return [];
+  const parts = variants[0].variant_name.split(' / ');
+  if (parts.length < 2) return [{ name: 'Variant', values: variants.map(v => v.variant_name) }];
+  
+  const groups = [];
+  parts.forEach((_, idx) => {
+    const values = [...new Set(variants.map(v => v.variant_name.split(' / ')[idx]).filter(Boolean))];
+    const name = ['Color', 'Size', 'Quantity', 'Style', 'Pattern'].includes(values[0])
+      ? values[0] : `Spec-${idx+1}`;
+    // Detect common spec names
+    if (values.some(v => ['Twin','Full','Queen','King','S','M','L','XL'].includes(v))) groups.push({ name: 'Size', values });
+    else if (values.some(v => v.length > 3 && !v.match(/^\d/))) groups.push({ name: 'Color', values });
+    else groups.push({ name: `Spec-${idx+1}`, values });
+  });
+  return groups;
+}
+
+// ============== 矩阵热力图 ==============
+
+function renderMatrix(variants, specGroups, minPrice, maxPrice, diffMap) {
+  if (specGroups.length < 2) return renderList(variants, minPrice, maxPrice);
+
+  const rows = specGroups[0].values; // e.g., Colors
+  const cols = specGroups[1].values; // e.g., Sizes
+
+  // Build lookup: "Color / Size" -> price
+  const priceMap = {};
+  variants.forEach(v => { priceMap[v.variant_name] = v.current_price; });
+
+  const heatColor = (price) => {
+    if (price == null) return '#f0f0f0';
+    if (maxPrice === minPrice) return '#ffeaa7';
+    const ratio = (price - minPrice) / (maxPrice - minPrice);
+    if (ratio < 0.33) return `hsl(${140 - ratio * 60}, 70%, ${85 - ratio * 15}%)`;
+    if (ratio < 0.66) return `hsl(${50 - (ratio-0.33) * 150}, 80%, ${80 - ratio * 10}%)`;
+    return `hsl(${10 - (ratio-0.66) * 30}, 75%, ${78 - ratio * 8}%)`;
+  };
+
+  let html = '<div class="legend"><span>低</span><div class="legend-bar"></div><span>高</span><span style="margin-left:12px;">⬛最低价 ⬛最高价</span></div>';
+  html += '<div class="matrix-wrap"><table class="matrix-table"><thead><tr><th></th>';
+  cols.forEach(col => { html += `<th>${col}</th>`; });
+  html += '</tr></thead><tbody>';
+
+  rows.forEach(row => {
+    html += `<tr><td>${row}</td>`;
+    cols.forEach(col => {
+      const key = `${row} / ${col}`;
+      const price = priceMap[key];
+      const isMin = price === minPrice && price != null;
+      const isMax = price === maxPrice && price != null && maxPrice !== minPrice;
+      const cls = isMin ? 'matrix-best' : (isMax ? 'matrix-worst' : '');
+      let arrow = '';
+      if (diffMap[key]) {
+        const d = diffMap[key];
+        const up = d.diff > 0;
+        arrow = `<span style="font-size:11px;color:${up ? 'var(--red)' : 'var(--green)'};margin-left:4px">${up ? '↑' : '↓'}${Math.abs(d.pct)}%</span>`;
+      }
+      html += `<td class="${cls}" style="background:${heatColor(price)}">${price != null ? '$'+price.toFixed(2) : '-'}${arrow}</td>`;
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ============== 列表视图 ==============
+
+function renderList(variants, minPrice, maxPrice, diffMap) {
+  const hasDiff = Object.keys(diffMap).length > 0;
+  return `<table>
+    <thead><tr><th>变体</th><th>当前售价</th><th>原价</th>${hasDiff ? '<th>变动</th>' : ''}<th>标记</th></tr></thead>
+    <tbody>${variants.map(v => {
+      const isMin = v.current_price === minPrice;
+      const isMax = v.current_price === maxPrice && maxPrice !== minPrice;
+      const d = diffMap[v.variant_name];
+      let changeHtml = '';
+      if (d) {
+        const up = d.diff > 0;
+        changeHtml = `<span style="color:${up ? 'var(--red)' : 'var(--green)'};font-weight:600">${up ? '↑' : '↓'} $${Math.abs(d.diff).toFixed(2)} (${Math.abs(d.pct)}%)</span>`;
+      }
+      return `<tr>
+        <td>${v.variant_name}</td>
+        <td class="price">${v.current_price != null ? '$'+v.current_price.toFixed(2) : '-'}</td>
+        <td style="color:var(--text-secondary)">${v.original_price != null ? '$'+v.original_price.toFixed(2) : '-'}</td>
+        ${hasDiff ? `<td>${changeHtml || '—'}</td>` : ''}
+        <td>${isMin ? '⬇ 最低' : isMax ? '⬆ 最高' : ''}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+// ============== 卡片视图 ==============
+
+function renderCards(variants, minPrice, diffMap) {
+  return `<div class="variant-cards">${variants.map(v => {
+    const d = diffMap[v.variant_name];
+    let diffHtml = '';
+    if (d) {
+      const up = d.diff > 0;
+      diffHtml = `<div style="font-size:13px;font-weight:700;color:${up ? 'var(--red)' : 'var(--green)'};margin-top:2px">${up ? '↑' : '↓'} $${Math.abs(d.diff).toFixed(2)}</div>`;
+    }
+    return `
+    <div class="v-card ${v.current_price === minPrice ? 'best' : ''}">
+      <div class="v-name">${v.variant_name}</div>
+      <div class="v-price">${v.current_price != null ? '$'+v.current_price.toFixed(2) : '-'}</div>
+      ${v.original_price ? `<div class="v-original">$${v.original_price.toFixed(2)}</div>` : ''}
+      ${diffHtml}
+      ${v.current_price === minPrice ? '<div style="font-size:11px;color:var(--green);margin-top:4px;">🏷 最低价</div>' : ''}
+    </div>`}).join('')}</div>`;
+}
+
+// ============== 视图切换 ==============
+
+function switchView(mode) {
+  viewMode = mode;
+  renderDetail();
+}
+
+// ============== 价格走势图 ==============
+
+function drawPriceChart(product) {
+  const ctx = document.getElementById('priceChart');
+  if (!ctx) return;
+
+  // Get all snapshots sorted
+  const snapshots = [...product.snapshots].reverse();
+  // Get unique variant names across all snapshots
+  const allVariantNames = [...new Set(snapshots.flatMap(s => s.variants.map(v => v.variant_name)))];
+  const topVariants = allVariantNames.slice(0, 8); // show top 8
+
+  const datasets = topVariants.map((name, i) => {
+    const colors = ['#e87400','#0984e3','#00b894','#e17055','#6c5ce7','#fdcb6e','#00cec9','#fd79a8'];
+    const data = snapshots.map(s => {
+      const v = s.variants.find(x => x.variant_name === name);
+      return v ? v.current_price : null;
+    });
+    return {
+      label: name.length > 25 ? name.slice(0,25)+'...' : name,
+      data,
+      borderColor: colors[i],
+      backgroundColor: colors[i]+'20',
+      tension: 0.3,
+      spanGaps: true,
+    };
+  });
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: snapshots.map(s => new Date(s.captured_at).toLocaleString('zh-CN', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})),
+      datasets,
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 12 } } },
+      scales: {
+        y: { ticks: { callback: v => '$'+v } }
+      }
+    }
+  });
+}
+
+// ============== 运营角色选择 ==============
+
+const OPERATOR_NAMES = ['王瑞燕','袁佳乐','徐菲','范一非','葛洲','瞿可儿','刘昊鹏','狄威','陈玉婷','丁利芳','邵琪琪','程蕾'];
+let selectedOperator = null; // 当前登录的运营
+
+function initOperatorRole() {
+  const saved = localStorage.getItem('temu_tracker_operator');
+  if (saved && OPERATOR_NAMES.includes(saved)) {
+    selectedOperator = saved;
+    updateOperatorBadge();
+  } else {
+    showOperatorSelector();
+  }
+}
+
+function updateOperatorBadge() {
+  const badge = document.getElementById('operatorBadge');
+  const avatar = document.getElementById('badgeAvatar');
+  const name = document.getElementById('badgeName');
+  if (selectedOperator) {
+    badge.style.display = 'inline-flex';
+    avatar.textContent = selectedOperator[0];
+    name.textContent = selectedOperator;
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function showOperatorSelector() {
+  const modal = document.getElementById('operatorModal');
+  const grid = document.getElementById('operatorSelectGrid');
+  const allNames = [...OPERATOR_NAMES, '测试'];
+  grid.innerHTML = allNames.map(n => {
+    const cls = n === '测试' ? 'op-select-card test' : 'op-select-card';
+    return `<div class="${cls}" onclick="selectOperator('${n}')">
+      <div class="avatar">${n[0]}</div>
+      <div>${n}</div>
+    </div>`;
+  }).join('');
+  modal.style.display = 'flex';
+}
+
+function selectOperator(name) {
+  selectedOperator = name;
+  localStorage.setItem('temu_tracker_operator', name);
+  document.getElementById('operatorModal').style.display = 'none';
+  updateOperatorBadge();
+  // 更新抓取面板标题
+  document.getElementById('scrapeOpName').textContent = name;
+}
+
+// ============== 抓取入口 ==============
+
+function toggleScrape() {
+  const section = document.getElementById('scrapeSection');
+  const btn = document.getElementById('scrapeToggle');
+  if (section.style.display === 'none' || !section.style.display) {
+    section.style.display = 'block';
+    btn.classList.add('active');
+    // 更新当前运营名
+    document.getElementById('scrapeOpName').textContent = selectedOperator || '未选择运营';
+    // 生成每个运营的专属书签
+    renderOperatorBookmarks();
+  } else {
+    section.style.display = 'none';
+    btn.classList.remove('active');
+  }
+}
+
+function renderOperatorBookmarks() {
+  const list = document.getElementById('bookmarkList');
+  list.innerHTML = OPERATOR_NAMES.map(name => {
+    const code = `const OPERATOR_NAME='${name}';` + SCRAPER_INLINE;
+    const href = 'javascript:' + encodeURIComponent(code);
+    const isMe = (selectedOperator === name);
+    return `<a class="bookmark-btn" href="${href}" draggable="true" 
+      style="${isMe ? 'background:#00b894;border:2px solid #007a50' : ''}"
+      title="拖到书签栏：${name}的专属抓取书签">
+      🔍 ${name}
+    </a>`;
+  }).join('');
+}
+
+// ============== 初始化 ==============
+
+initOperatorRole();
+refreshData();
+setInterval(refreshData, 30000); // auto-refresh every 30s
+</script>
+</body>
+</html>
