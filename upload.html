@@ -314,6 +314,31 @@ if (encoded) {
     document.getElementById('manualCard').style.display = 'block';
     log(e.message);
   }
+} else if (window.opener) {
+  // 弹窗方案：向来源窗口（Temu 页面）请求抓取数据
+  setStatus('loading', '⏳ 正在从 Temu 页面接收数据...');
+  log('已连接 Temu 页面，等待数据...');
+  let got = false;
+  const onMsg = function(e) {
+    const d = e.data;
+    if (d && d.type === 'temu_data' && d.payload && d.payload.pid && d.payload.snapshot) {
+      got = true;
+      window.removeEventListener('message', onMsg);
+      pendingObj = d.payload;
+      metaEl.innerHTML = '运营: <b>' + (d.payload.snapshot.op || d.payload.operator || '未知') + '</b><br>商品ID: <b>' + d.payload.pid + '</b><br>变体数: <b>' + (d.payload.snapshot.v || []).length + '</b>';
+      if (!ensureToken()) return; // 等待用户输入 token 后继续
+      processPending();
+    }
+  };
+  window.addEventListener('message', onMsg);
+  try { window.opener.postMessage({ type: 'temu_req_data' }, '*'); } catch (e) {}
+  setTimeout(function() {
+    if (!got) {
+      setStatus('error', '❌ 未收到 Temu 页面数据，请重新点书签抓取');
+      document.getElementById('manualCard').style.display = 'block';
+      log('接收数据超时');
+    }
+  }, 8000);
 } else {
   if (!ensureToken()) return;
   setStatus('error', '❌ 未收到数据，请重新从 Temu 页面点击书签抓取');
