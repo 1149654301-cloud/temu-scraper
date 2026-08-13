@@ -195,40 +195,16 @@ canvas { width:100% !important; max-height:350px; }
 </div>
 
 <script>
+
 // ============== 全局状态 ==============
 let products = [];
 let currentProduct = null;
 let currentOperator = null; // null = 运营列表; string = 某运营的商品列表
 let viewMode = 'matrix'; // matrix | list
 
-// GitHub 云端数据源
-// 通过 GitHub Pages 访问时读同域 data.json；本地打开时读 raw 直链
-const isFileProtocol = location.protocol === 'file:';
-const CLOUD_URL = isFileProtocol
-  ? 'https://raw.githubusercontent.com/1149654301-cloud/temu-scraper/main/data.json'
-  : './data.json';
-
-// 兼容本地脚本单价格格式：如果 vn 是数字而非数组，包装成单元素数组
-function normalizeCompact(compact) {
-  if (!compact || !compact.p) return compact;
-  for (const cp of compact.p) {
-    if (typeof cp.vn === 'number') {
-      cp.vn = ['Default'];
-      cp.vo = [null];
-    }
-    if (Array.isArray(cp.ss)) {
-      for (const s of cp.ss) {
-        if (typeof s.v === 'number') {
-          s.v = [s.v];
-          s.o = [s.op !== undefined ? s.op : null];
-          delete s.op;
-        }
-      }
-    }
-  }
-  return compact;
-}
-const SCRAPER_INLINE = '(async()=>{const t=location.href.match(/g-(\\d+)\\.html/),e=t?t[1]:"unknown";let n=e;const o=t=>new Promise(e=>setTimeout(e,t));let i="undefined"!=typeof OPERATOR_NAME?OPERATOR_NAME:null;const s=document.createElement("div");if(s.id="temu_scraper_overlay",document.getElementById("temu_scraper_overlay"))return;s.style.cssText="position:fixed;top:10px;right:10px;width:380px;background:#1a1a2e;color:#fff;border-radius:12px;padding:16px;z-index:999999;font-family:system-ui,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,.4);font-size:14px;line-height:1.5",s.innerHTML=\'\\n    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">\\n      <span id="ts_title" style="font-size:16px;font-weight:700">🔍 Temu 价格抓取</span>\\n      <span id="ts_close" style="cursor:pointer;opacity:.5;font-size:18px" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.5">✕</span>\\n    </div>\\n    <div id="ts_body"></div>\\n    <div id="ts_progress" style="display:none;">\\n      <div id="ts_msg" style="color:#aaa;margin-bottom:8px;margin-top:8px"></div>\\n      <div style="height:6px;background:#333;border-radius:3px;overflow:hidden;margin-bottom:8px">\\n        <div id="ts_bar" style="height:100%;width:0;background:linear-gradient(90deg,#4CAF50,#8BC34A);transition:width .3s;border-radius:3px"></div>\\n      </div>\\n      <div id="ts_log" style="max-height:150px;overflow-y:auto;font-size:12px;color:#888;line-height:1.6;word-break:break-all"></div>\\n    </div>\\n  \',document.body.appendChild(s),document.getElementById("ts_close").onclick=()=>s.remove();const a=document.getElementById("ts_body"),r=document.getElementById("ts_progress"),l=t=>{const e=document.getElementById("ts_msg");e&&(e.textContent=t)},d=t=>{const e=document.getElementById("ts_bar");e&&(e.style.width=t+"%")},p=t=>{const e=document.getElementById("ts_log");e&&(e.innerHTML+=t+"<br>",e.scrollTop=e.scrollHeight)};i||(a.innerHTML=`\\n      <div style="margin-bottom:14px;">\\n        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:6px;">商品ID</label>\\n        <div style="padding:8px 12px;background:#2d2d44;border-radius:6px;font-size:13px;color:#8BC34A;font-family:monospace">${e}</div>\\n      </div>\\n      <div style="margin-bottom:14px;">\\n        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:6px;">请输入您的名字（运营名）</label>\\n        <input id="ts_operator" type="text" placeholder="例如：张三" style="width:100%;padding:10px 12px;background:#2d2d44;border:1px solid #4a4a6a;border-radius:6px;color:#fff;font-size:14px;outline:none;box-sizing:border-box" autofocus>\\n      </div>\\n      <button id="ts_start" style="width:100%;padding:10px;background:linear-gradient(135deg,#e87400,#ff8c00);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer">🚀 开始抓取</button>\\n      <div style="text-align:center;margin-top:8px;font-size:11px;color:#666">抓取过程约需 30~120 秒</div>\\n    `,i=await new Promise(t=>{document.getElementById("ts_start").onclick=()=>{const e=document.getElementById("ts_operator").value.trim();e?t(e):alert("请输入您的名字")},document.getElementById("ts_operator").onkeydown=e=>{if("Enter"===e.key){const e=document.getElementById("ts_operator").value.trim();if(!e)return void alert("请输入您的名字");t(e)}}})),a.style.display="none",r.style.display="block",document.getElementById("ts_title").textContent="🔍 "+i+" 正在抓取...",l("初始化中...");try{l("检测规格组...");const t=document.querySelectorAll(\'div[role="radio"]\');if(!t.length)return void l("❌ 未找到规格选项，请确认页面已完全加载");const s=new Map;t.forEach(t=>{const e=t.parentElement?.parentElement;e&&(s.has(e)||s.set(e,[]),s.get(e).push(t))});const a=["Color","Size","Quantity","Style","Pattern","Material","Type","Version","Model"],r=[];let c=0;s.forEach((t,e)=>{const n=e.textContent||"";let o="Spec-"+ ++c;for(const t of a)if(n.includes(t)){o=t;break}r.push({name:o,options:t.map(t=>t.getAttribute("aria-label"))})}),p("规格组: "+r.map(t=>t.name+"("+t.options.length+")").join(", "));const m=[];!function t(e,n){if(e!==r.length)for(const o of r[e].options)n.push(o),t(e+1,n),n.pop();else m.push([...n])}(0,[]),p("共 "+m.length+" 个组合"),l("开始抓取 "+m.length+" 个组合..."),d(0);const g=[];for(let t=0;t<m.length;t++){const e=m[t].join(" / ");for(const e of m[t]){const t=document.querySelector(\'div[aria-label="\'+e.replace(/"/g,\'\\\\"\')+\'"]\');t&&t.click(),await o(600)}await o(2e3);const n=[...document.querySelectorAll("._14At0Pe5")].map(t=>t.textContent.trim()).filter(t=>t.startsWith("$"));let i=null,s=null;n.length>=2?(s=parseFloat(n[0].replace(/[$,]/g,"")),i=parseFloat(n[1].replace(/[$,]/g,""))):1===n.length&&(i=parseFloat(n[0].replace(/[$,]/g,""))),null!==i&&g.push({n:e,p:i,o:s}),d(Math.round((t+1)/m.length*85)),t%5!=0&&t!==m.length-1||p("["+(t+1)+"/"+m.length+"] "+e+" → $"+i)}p("抓取完成，准备上传..."),l("正在打开仪表盘上传数据..."),d(90);const u={t:(new Date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}),operator:i,product_name:n,v:g.map(t=>({n:t.n,p:t.p,o:t.o}))},y=btoa(unescape(encodeURIComponent(JSON.stringify({pid:e,snapshot:u}))));if(y.length>6e3){l("数据量较大，请复制后手动粘贴");const t=JSON.stringify({pid:e,snapshot:u});return void navigator.clipboard.writeText(t).then(()=>{alert(\'抓取完成，但数据量过大无法自动上传。数据已复制到剪贴板，请打开仪表盘点击"手动导入"粘贴。\')})}const h="https://e73a83c543ac4777a1c3eadf3093eaa4.bj8.agentos-app.net/upload.html?d="+encodeURIComponent(y);window.open(h,"_blank"),l("✅ 抓取完成"),d(100),p("已打开上传页面，由仪表盘代为写入数据中心")}catch(t){l("❌ "+t.message),p(t.message)}})();';
+// jsonblob 数据中心 (所有数据读写都通过这个 URL)
+const BLOB_URL = 'https://jsonblob.com/api/jsonBlob/019feff3-ac2e-7da2-b540-d521af103618';
+const SCRAPER_INLINE = '(async()=>{const t="undefined"!=typeof UPLOAD_BASE?UPLOAD_BASE:"https://f7fd3017cdaa4a429c4844fbc881d955.sh4.agentos-app.net",e=location.href.match(/g-(\\d+)\\.html/),n=e?e[1]:"unknown";let o=n;const i=t=>new Promise(e=>setTimeout(e,t));let r="undefined"!=typeof OPERATOR_NAME?OPERATOR_NAME:null;const l=document.createElement("div");if(l.id="temu_scraper_overlay",document.getElementById("temu_scraper_overlay"))return;l.style.cssText="position:fixed;top:10px;right:10px;width:380px;background:#1a1a2e;color:#fff;border-radius:12px;padding:16px;z-index:999999;font-family:system-ui,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,.4);font-size:14px;line-height:1.5",l.innerHTML=\'\\n    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">\\n      <span id="ts_title" style="font-size:16px;font-weight:700">🔍 Temu 价格抓取</span>\\n      <span id="ts_close" style="cursor:pointer;opacity:.5;font-size:18px" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.5">✕</span>\\n    </div>\\n    <div id="ts_body"></div>\\n    <div id="ts_progress" style="display:none;">\\n      <div id="ts_msg" style="color:#aaa;margin-bottom:8px;margin-top:8px"></div>\\n      <div style="height:6px;background:#333;border-radius:3px;overflow:hidden;margin-bottom:8px">\\n        <div id="ts_bar" style="height:100%;width:0;background:linear-gradient(90deg,#4CAF50,#8BC34A);transition:width .3s;border-radius:3px"></div>\\n      </div>\\n      <div id="ts_log" style="max-height:150px;overflow-y:auto;font-size:12px;color:#888;line-height:1.6;word-break:break-all"></div>\\n    </div>\\n  \',document.body.appendChild(l),document.getElementById("ts_close").onclick=()=>l.remove();const a=document.getElementById("ts_body"),s=document.getElementById("ts_progress"),d=t=>{const e=document.getElementById("ts_msg");e&&(e.textContent=t)},c=t=>{const e=document.getElementById("ts_bar");e&&(e.style.width=t+"%")},p=t=>{const e=document.getElementById("ts_log");e&&(e.innerHTML+=t+"<br>",e.scrollTop=e.scrollHeight)};r||(a.innerHTML=`\\n      <div style="margin-bottom:14px;">\\n        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:6px;">商品ID</label>\\n        <div style="padding:8px 12px;background:#2d2d44;border-radius:6px;font-size:13px;color:#8BC34A;font-family:monospace">${n}</div>\\n      </div>\\n      <div style="margin-bottom:14px;">\\n        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:6px;">请输入您的名字（运营名）</label>\\n        <input id="ts_operator" type="text" placeholder="例如：张三" style="width:100%;padding:10px 12px;background:#2d2d44;border:1px solid #4a4a6a;border-radius:6px;color:#fff;font-size:14px;outline:none;box-sizing:border-box" autofocus>\\n      </div>\\n      <button id="ts_start" style="width:100%;padding:10px;background:linear-gradient(135deg,#e87400,#ff8c00);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer">🚀 开始抓取</button>\\n      <div style="text-align:center;margin-top:8px;font-size:11px;color:#666">抓取过程约需 15~60 秒</div>\\n    `,r=await new Promise(t=>{document.getElementById("ts_start").onclick=()=>{const e=document.getElementById("ts_operator").value.trim();e?t(e):alert("请输入您的名字")},document.getElementById("ts_operator").onkeydown=e=>{if("Enter"===e.key){const e=document.getElementById("ts_operator").value.trim();if(!e)return void alert("请输入您的名字");t(e)}}})),a.style.display="none",s.style.display="block",document.getElementById("ts_title").textContent="🔍 "+r+" 正在抓取...",d("初始化中...");try{d("检测规格组...");const e=document.querySelectorAll(\'div[role="radio"]\');if(!e.length)return void d("❌ 未找到规格选项，请确认页面已完全加载");const l=new Map;e.forEach(t=>{const e=t.parentElement?.parentElement;e&&(l.has(e)||l.set(e,[]),l.get(e).push(t))});const a=["Color","Size","Quantity","Style","Pattern","Material","Type","Version","Model"],s=[];let g=0;l.forEach((t,e)=>{const n=e.textContent||"";let o="Spec-"+ ++g;for(const t of a)if(n.includes(t)){o=t;break}s.push({name:o,options:t.map(t=>t.getAttribute("aria-label")).filter(Boolean)})});const u=s.filter(t=>t.options.length>0);if(!u.length)return void d("❌ 规格组为空");p("规格组: "+u.map(t=>t.name+"("+t.options.length+")").join(", "));const m=[];!function t(e,n){if(e!==u.length)for(const o of u[e].options)n.push(o),t(e+1,n),n.pop();else m.push([...n])}(0,[]),p("共 "+m.length+" 个组合"),d("开始抓取 "+m.length+" 个组合..."),c(0);const f=()=>{let t=[...document.querySelectorAll("._14At0Pe5")].map(t=>t.textContent.trim()).filter(t=>t.startsWith("$"));if(!t.length){const e=new Set;document.querySelectorAll("span,div,p").forEach(n=>{const o=(n.innerText||"").trim();o&&/^\\$\\s?\\d/.test(o)&&o.length<20&&!e.has(o)&&(e.add(o),t.push(o))}),t=t.slice(0,4)}return t},h=()=>f().join("|"),y=async t=>{const e=Date.now();let n=h(),o=0;for(;Date.now()-e<t;){await i(200);const t=h();if(t===n){if(o++,o>=2)return}else o=0,n=t}},x=async t=>{const e=document.querySelector(\'div[aria-label="\'+t.replace(/"/g,\'\\\\"\')+\'"]\');if(!e)return!1;return"true"!==e.getAttribute("aria-checked")&&(e.click(),await i(250),!0)},b=[];let v=null;for(let t=0;t<m.length;t++){const e=m[t],n=e.join(" / ");let o=0;if(v)for(;o<e.length&&v[o]===e[o];)o++;for(let t=o;t<e.length;t++)await x(e[t]);await y(2500);const i=f();let r=null,l=null;i.length>=2?(l=parseFloat(i[0].replace(/[$,]/g,"")),r=parseFloat(i[1].replace(/[$,]/g,""))):1===i.length&&(r=parseFloat(i[0].replace(/[$,]/g,""))),null!==r?(b.push({n:n,p:r,o:l}),c(Math.round((t+1)/m.length*85)),t%5!=0&&t!==m.length-1||p("["+(t+1)+"/"+m.length+"] "+n+" → $"+r),v=e):(v=e,c(Math.round((t+1)/m.length*85)))}p("抓取完成，准备上传..."),d("正在打开仪表盘上传数据..."),c(90);const _={t:(new Date).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"}),operator:r,product_name:o,v:b.map(t=>({n:t.n,p:t.p,o:t.o}))},w=btoa(unescape(encodeURIComponent(JSON.stringify({pid:n,snapshot:_}))));if(w.length>6e3){d("数据量较大，请复制后手动粘贴");const t=JSON.stringify({pid:n,snapshot:_});return void navigator.clipboard.writeText(t).then(()=>{alert(\'抓取完成，但数据量过大无法自动上传。数据已复制到剪贴板，请打开仪表盘点击"手动导入"粘贴。\')})}const E=t+"/upload.html?d="+encodeURIComponent(w),k=window.open(E,"_blank");if(!k||k.closed||void 0===k.closed){const t=document.createElement("a");t.href=E,t.target="_blank",t.textContent="👉 点击这里手动上传",t.style.cssText="display:block;margin-top:12px;padding:10px 16px;background:#e87400;color:#fff;border-radius:8px;text-align:center;text-decoration:none;font-weight:600;cursor:pointer;",document.getElementById("ts_log").appendChild(document.createElement("div")).appendChild(t),p("⚠️ 浏览器拦截了弹窗，请手动点击上方按钮上传")}d("✅ 抓取完成"),c(100),p("已打开上传页面，由仪表盘代为写入数据中心")}catch(t){d("❌ "+t.message),p(t.message)}})();';
 
 // ============== 数据加载 (从 jsonblob 读取紧凑格式并展开) ==============
 
@@ -295,7 +271,7 @@ async function refreshData() {
     } catch(e) {}
   }
 
-  // 2. 从 GitHub 云端拉取（raw 直链，无需认证，最多重试 3 次，递增间隔）
+  // 2. 从 jsonblob 拉取（最多重试 3 次，递增间隔）
   let lastErr = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -303,10 +279,9 @@ async function refreshData() {
         badge.innerHTML = '<span class="badge badge-updating">重试中 (' + (attempt + 1) + '/3)...</span>';
         await new Promise(r => setTimeout(r, 1500 * attempt));
       }
-      const resp = await fetch(CLOUD_URL, { signal: AbortSignal.timeout(10000) });
+      const resp = await fetch(BLOB_URL, { signal: AbortSignal.timeout(10000) });
       if (resp.ok) {
-        let compact = await resp.json();
-        compact = normalizeCompact(compact);
+        const compact = await resp.json();
         if (compact && compact.p) {
           applyData(compact, badge, false);
           return;
@@ -392,7 +367,6 @@ function renderMainList() {
         const maxPrice = validPrices.length ? Math.max(...validPrices) : null;
         const isActive = currentProduct && currentProduct.product_id === p.product_id;
         html += `<div class="product-item ${isActive ? 'active' : ''}" onclick="selectProduct('${p.product_id}')">
-          <button class="delete-btn" onclick="deleteProduct('${p.product_id}', event)" title="删除此商品">✕</button>
           <div class="name">${p.product_name_cn || p.product_name || p.product_id}</div>
           <div class="meta">${latest ? latest.variants.length : 0} 个变体 · ${minPrice != null ? '$'+minPrice.toFixed(2)+' ~ $'+maxPrice.toFixed(2) : '暂无价格'} · ${p.snapshots.length} 次抓取</div>
         </div>`;
@@ -454,54 +428,6 @@ function selectProduct(id) {
   currentProduct = products.find(p => p.product_id === id);
   renderMainList();
   renderDetail();
-}
-
-async function deleteProduct(productId, event) {
-  // 阻止冒泡，避免触发选择商品
-  if (event) { event.stopPropagation(); event.preventDefault(); }
-
-  const product = products.find(p => p.product_id === productId);
-  if (!product) return;
-
-  const displayName = product.product_name_cn || product.product_name || productId;
-  if (!confirm('确认删除商品 "' + displayName + '"？\n\n该操作将从列表和云端同步删除，不可撤销。')) return;
-
-  // 获取 compact 数据（优先本地缓存，fallback 云端）
-  let compact = null;
-  const cached = localStorage.getItem(CACHE_KEY);
-  if (cached) {
-    try { compact = JSON.parse(cached); } catch(e) {}
-  }
-  if (!compact || !compact.p) {
-    try {
-      const resp = await fetch(CLOUD_URL);
-      if (resp.ok) {
-        compact = await resp.json();
-        compact = normalizeCompact(compact);
-      }
-    } catch(e) {}
-  }
-  if (!compact || !compact.p) {
-    alert('无法获取数据源，请刷新后重试');
-    return;
-  }
-
-  // 移除目标商品
-  compact.p = compact.p.filter(cp => cp.id !== productId);
-
-  // 同步到 localStorage
-  localStorage.setItem(CACHE_KEY, JSON.stringify(compact));
-
-  // 注：浏览器端无法安全写入 GitHub，如需彻底删除请从 products.json 移除该商品后重新抓取
-
-  // 更新本地状态
-  products = products.filter(p => p.product_id !== productId);
-  if (currentProduct && currentProduct.product_id === productId) {
-    currentProduct = null;
-    document.getElementById('detailPanel').innerHTML = '<div class="card empty-state"><div class="icon">📊</div><p>选择商品查看详情</p></div>';
-  }
-
-  renderMainList();
 }
 
 // ============== 价格变动对比 ==============
@@ -855,7 +781,7 @@ function toggleScrape() {
 function renderOperatorBookmarks() {
   const list = document.getElementById('bookmarkList');
   list.innerHTML = OPERATOR_NAMES.map(name => {
-    const code = `const OPERATOR_NAME='${name}';` + SCRAPER_INLINE;
+    const code = `const OPERATOR_NAME='${name}'; const UPLOAD_BASE='${new URL(location.href).origin}';` + SCRAPER_INLINE;
     const href = 'javascript:' + encodeURIComponent(code);
     const isMe = (selectedOperator === name);
     return `<a class="bookmark-btn" href="${href}" draggable="true" 
@@ -871,6 +797,7 @@ function renderOperatorBookmarks() {
 initOperatorRole();
 refreshData();
 setInterval(refreshData, 30000); // auto-refresh every 30s
+
 </script>
 </body>
 </html>
