@@ -540,7 +540,7 @@ function renderDetail() {
         <h2 style="font-size:20px;margin:0;">${p.product_name_cn || p.product_name || p.note || '商品 ' + p.product_id}</h2>
         <input type="text" class="product-note-input" id="noteInput" placeholder="填写产品备注/名称..." value="${noteText}" onchange="saveNote('${p.product_id}', this.value)">
       </div>
-      <div style="color:var(--text-secondary);font-size:13px;margin-top:4px;">ID: ${p.product_id}${p.category ? ' · '+p.category : ''}${noteDisplay} · ${p.snapshots.length} 次抓取${hasHistory ? ' · 最近: '+new Date(latest.captured_at).toLocaleString('zh-CN') : ''}</div>
+      <div style="color:var(--text-secondary);font-size:13px;margin-top:4px;">ID: <a href="https://www.temu.com/g-${p.product_id}.html" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-weight:600;text-decoration:underline;">${p.product_id}</a> · ${p.category ? ' · '+p.category : ''}${noteDisplay} · ${p.snapshots.length} 次抓取${hasHistory ? ' · 最近: '+new Date(latest.captured_at).toLocaleString('zh-CN') : ''}</div>
     </div>
     ${changedCount > 0 ? `<div style="margin-bottom:16px;background:#fff;border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px">
       📊 相比上次抓取：<span style="color:var(--red);font-weight:700">↑${Object.values(diffMap).filter(d=>d.diff>0).length}涨</span> <span style="color:var(--green);font-weight:700">↓${Object.values(diffMap).filter(d=>d.diff<0).length}跌</span> <span style="color:var(--text-secondary)">(${changedCount}个变体变动)</span>
