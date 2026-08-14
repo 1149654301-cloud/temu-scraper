@@ -127,6 +127,22 @@ canvas { width:100% !important; max-height:350px; }
   padding:10px 20px; border-radius:8px; font-size:13px; z-index:99999; opacity:0; transition:opacity .3s; pointer-events:none;
 }
 .note-toast.show { opacity:1; }
+
+/* Token 按钮 & 弹窗 */
+.token-btn { padding:6px 14px; border:1px solid var(--border); border-radius:6px; background:var(--card); cursor:pointer; font-size:13px; display:flex; align-items:center; gap:4px; transition:all .2s; }
+.token-btn:hover { border-color:var(--accent); }
+.token-btn.has-token { background:#f0fdf7; color:var(--green); border-color:var(--green); }
+.token-modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:10000; display:flex; align-items:center; justify-content:center; }
+.token-modal { background:#fff; border-radius:12px; padding:28px; max-width:440px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,.3); }
+.token-modal h3 { font-size:18px; margin-bottom:8px; }
+.token-modal p { font-size:13px; color:var(--text-secondary); margin-bottom:16px; line-height:1.6; }
+.token-modal input { width:100%; padding:10px 14px; border:1px solid var(--border); border-radius:8px; font-size:14px; font-family:monospace; margin-bottom:12px; }
+.token-modal input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(232,116,0,.1); }
+.token-modal .btns { display:flex; gap:8px; justify-content:flex-end; }
+.token-modal .btn-save { padding:8px 20px; border:none; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; font-size:14px; font-weight:600; }
+.token-modal .btn-save:hover { opacity:.85; }
+.token-modal .btn-cancel { padding:8px 20px; border:1px solid var(--border); border-radius:8px; background:var(--card); cursor:pointer; font-size:14px; }
+.token-modal .btn-clear { padding:8px 16px; border:1px solid #e17055; border-radius:8px; background:#fff; color:#e17055; cursor:pointer; font-size:13px; margin-right:auto; }
 </style>
 </head>
 <body>
@@ -179,6 +195,7 @@ canvas { width:100% !important; max-height:350px; }
     <div style="display:flex;gap:8px;">
       <button class="toggle-btn active" onclick="toggleScrape()" id="scrapeToggle">📥 抓取新商品</button>
       <button class="toggle-btn" onclick="refreshData()">🔄 刷新数据</button>
+      <button class="token-btn" id="tokenBtn" onclick="showTokenModal()">🔑 Token</button>
     </div>
   </div>
 
@@ -188,6 +205,20 @@ canvas { width:100% !important; max-height:350px; }
       <h2>👤 选择你的运营身份</h2>
       <p class="subtitle">选择后将以此身份抓取商品价格，数据不会混淆</p>
       <div class="operator-select-grid" id="operatorSelectGrid"></div>
+    </div>
+  </div>
+
+  <!-- Token 设置弹窗 -->
+  <div class="token-modal-overlay" id="tokenModal" style="display:none;" onclick="if(event.target===this)hideTokenModal()">
+    <div class="token-modal">
+      <h3>🔑 GitHub Token 设置</h3>
+      <p>Token 用于保存备注到 GitHub。<br>粘贴你的 Token（<code>ghp_</code> 开头），保存在本地浏览器中。<br><a href="https://github.com/settings/tokens" target="_blank" style="color:var(--accent);">点此去 GitHub 生成</a>，勾选 <code>repo</code> 权限即可。</p>
+      <input type="password" id="tokenInputField" placeholder="ghp_xxxxxxxxxxxx" autocomplete="off">
+      <div class="btns">
+        <button class="btn-clear" id="tokenClearBtn" onclick="clearToken()" style="display:none;">清除 Token</button>
+        <button class="btn-cancel" onclick="hideTokenModal()">取消</button>
+        <button class="btn-save" onclick="saveTokenFromDashboard()">保存</button>
+      </div>
     </div>
   </div>
 
@@ -708,10 +739,59 @@ const GH_REPO = 'temu-scraper';
 const GH_PATH = 'data.json';
 const TOKEN_KEY = 'temu_tracker_gh_token';
 
+// ============== Token 管理（仪表盘本地） ==============
+
+function updateTokenBtn() {
+  const btn = document.getElementById('tokenBtn');
+  if (!btn) return;
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) {
+    btn.classList.add('has-token');
+    btn.innerHTML = '🔑 Token ✓';
+  } else {
+    btn.classList.remove('has-token');
+    btn.innerHTML = '🔑 Token';
+  }
+}
+
+function showTokenModal() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  const input = document.getElementById('tokenInputField');
+  const clearBtn = document.getElementById('tokenClearBtn');
+  input.value = token || '';
+  clearBtn.style.display = token ? 'inline-block' : 'none';
+  document.getElementById('tokenModal').style.display = 'flex';
+  setTimeout(() => input.focus(), 100);
+}
+
+function hideTokenModal() {
+  document.getElementById('tokenModal').style.display = 'none';
+}
+
+function saveTokenFromDashboard() {
+  const val = document.getElementById('tokenInputField').value.trim();
+  if (!val) { alert('请输入 Token'); return; }
+  if (!val.startsWith('ghp_') && !val.startsWith('github_pat_')) {
+    alert('Token 格式不正确，应以 ghp_ 开头'); return;
+  }
+  localStorage.setItem(TOKEN_KEY, val);
+  updateTokenBtn();
+  hideTokenModal();
+  showToast('Token 已保存');
+}
+
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+  updateTokenBtn();
+  hideTokenModal();
+  showToast('Token 已清除');
+}
+
 async function saveNote(productId, note) {
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token) {
-    alert('需要 GitHub Token 才能保存备注。请先抓取一次商品，在上传弹窗里输入并保存 Token；或者先打开一次 upload.html 输入 Token。');
+    alert('需要 GitHub Token 才能保存备注。\n\n请点击右上角「🔑 Token」按钮，粘贴你的 Token 并保存。');
+    showTokenModal();
     return;
   }
 
@@ -893,6 +973,7 @@ function renderOperatorBookmarks() {
 // ============== 初始化 ==============
 
 initOperatorRole();
+updateTokenBtn();
 refreshData();
 setInterval(refreshData, 30000); // auto-refresh every 30s
 </script>
