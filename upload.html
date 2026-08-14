@@ -79,7 +79,8 @@ header p { opacity:0.7; margin-top:6px; font-size:14px; }
 <script>
 // GitHub 数据中心 (Contents API 读+写，写需 token + sha 乐观锁)
 // Token 不硬编码：首次使用时输入，保存在浏览器 localStorage
-let GH_TOKEN = localStorage.getItem('temu_gh_token') || '';
+let GH_TOKEN = localStorage.getItem('temu_tracker_gh_token') || '';
+const TOKEN_KEY = 'temu_tracker_gh_token';
 const GH_OWNER = '1149654301-cloud';
 const GH_REPO = 'temu-scraper';
 const GH_PATH = 'data.json';
@@ -149,6 +150,12 @@ async function writeWithRetry(pid, compressed, snapshot) {
 
     const gr = await fetch(BLOB_URL, { headers: { 'Authorization': 'token ' + GH_TOKEN } });
     if (!gr.ok && gr.status !== 404) {
+      if (gr.status === 401) {
+        localStorage.removeItem(TOKEN_KEY);
+        GH_TOKEN = '';
+        document.getElementById('tokenCard').style.display = 'block';
+        throw new Error('Token 已失效（HTTP 401），请在下方重新输入有效的 GitHub Token');
+      }
       throw new Error('读取数据中心失败: HTTP ' + gr.status);
     }
 
@@ -270,6 +277,12 @@ async function manualUpload() {
 // 解析 URL 参数
 const params = new URLSearchParams(location.search);
 const encoded = params.get('d');
+const urlToken = params.get('t');
+if (urlToken) {
+  GH_TOKEN = urlToken;
+  localStorage.setItem(TOKEN_KEY, urlToken);
+  log('已从来源页面接收并保存 Token');
+}
 let pendingObj = null;
 
 function ensureToken() {
@@ -283,7 +296,7 @@ function saveToken() {
   const v = document.getElementById('tokenInput').value.trim();
   if (!v) return alert('请输入 token');
   GH_TOKEN = v;
-  localStorage.setItem('temu_gh_token', v);
+  localStorage.setItem(TOKEN_KEY, v);
   document.getElementById('tokenCard').style.display = 'none';
   log('✅ Token 已保存到浏览器本地，仅本机可见');
   processPending();
